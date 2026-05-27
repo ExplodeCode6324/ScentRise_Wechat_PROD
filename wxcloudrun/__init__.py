@@ -27,3 +27,7 @@ from wxcloudrun import views
 
 # 加载配置
 app.config.from_object('config')
+
+# 自动建表（云托管首次部署时数据库为空）
+with app.app_context():
+    db.create_all()
