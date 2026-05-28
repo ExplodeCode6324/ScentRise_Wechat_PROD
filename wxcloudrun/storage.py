@@ -11,6 +11,7 @@ Access Token 获取：优先读环境变量 WECHAT_ACCESS_TOKEN，
 import os
 import time
 import logging
+import uuid
 import requests
 
 logger = logging.getLogger('log')
@@ -138,33 +139,63 @@ def upload(file_data: bytes, cloud_path: str, content_type: str = 'image/png') -
         logger.error('storage.upload step1 error: %s', e)
         return {'success': False, 'error': f'获取上传链接网络错误: {str(e)}'}
 
-    # --- Step 2: POST 文件到 COS ---
+    # --- Step 2: 手动构建 multipart/form-data POST 到 COS ---
+    # 腾讯云 COS 要求字段严格按特定顺序，且 file 必须在最后
     try:
+        boundary = '----WebKitFormBoundary' + uuid.uuid4().hex[:16]
+
+        def _part(name, value, filename=None, content_type=None):
+            """构建一个 multipart part"""
+            header = f'--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"'
+            if filename:
+                header += f'; filename=\"{filename}\"'
+            if content_type:
+                header += f'\r\nContent-Type: {content_type}'
+            header += '\r\n\r\n'
+            if isinstance(value, bytes):
+                return header.encode() + value + b'\r\n'
+            return header.encode() + value.encode() + b'\r\n'
+
+        body = b''
+        body += _part('key', cloud_path)
+        body += _part('Signature', authorization)
+        body += _part('x-cos-security-token', token)
+        body += _part('x-cos-meta-fileid', cos_file_id)
+        body += _part('file', file_data,
+                      filename=cloud_path.rsplit('/', 1)[-1],
+                      content_type=content_type)
+        body += f'--{boundary}--\r\n'.encode()
+
         put_resp = requests.post(
             upload_url,
-            files={'file': (cloud_path.rsplit('/', 1)[-1], file_data, content_type)},
-            data={
-                'key': cloud_path,
-                'Signature': authorization,
-                'x-cos-security-token': token,
-                'x-cos-meta-fileid': cos_file_id,
+            data=body,
+            headers={
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
             },
             timeout=TIMEOUT,
         )
+
+        logger.info('storage.upload step2 response: HTTP %d body=%s',
+                     put_resp.status_code, put_resp.text[:500] if put_resp.text else '(empty)')
 
         if put_resp.status_code not in (200, 204):
             logger.error('storage.upload step2 failed: HTTP %d %s',
                          put_resp.status_code, put_resp.text[:500])
             return {'success': False, 'error': f'文件上传到COS失败: HTTP {put_resp.status_code}'}
 
+        # 检查响应体是否包含错误（腾讯云 COS 可能返回 200 但 body 有 XML 错误）
+        if put_resp.text and '<Error>' in put_resp.text:
+            logger.error('storage.upload step2 COS error in body: %s', put_resp.text[:500])
+            return {'success': False, 'error': 'COS返回错误，请检查存储桶权限和上传参数'}
+
         logger.info('storage.upload OK: %s -> %s', cloud_path, file_id)
         # 构造 CDN 直链（网页端可直接访问，需存储桶开通公共读）
-        cdn = f'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la'
+        cdn = 'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la'
         cdn_url = f'{cdn}/{cloud_path}'
         return {
             'success': True,
-            'url': cdn_url,           # CDN HTTP 地址，网页端 <img> 可用
-            'fileId': file_id,        # cloud:// 格式，供小程序/API 调用
+            'url': cdn_url,
+            'fileId': file_id,
             'cloudPath': cloud_path,
         }
 
