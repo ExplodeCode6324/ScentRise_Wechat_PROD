@@ -309,7 +309,7 @@ async function renderTagForm(id) {
             <form onsubmit="saveTag(event,${id||0})">
                 <div class="form-group"><label>名称 *</label><input name="name" value="${t.name||''}" required></div>
                 <div class="form-group"><label>分类</label><select name="category">
-                    ${['适用产品','产品形态','功效'].map(c=>`<option ${t.category==c?'selected':''}>${c}</option>`).join('')}
+                    ${['产品系列','适用产品'].map(c=>`<option ${t.category==c?'selected':''}>${c}</option>`).join('')}
                 </select></div>
                 <div class="form-group"><label>描述</label><textarea name="description">${t.description||''}</textarea></div>
                 <div class="form-group"><label>排序</label><input name="sortOrder" type="number" value="${t.sortOrder||0}"></div>
