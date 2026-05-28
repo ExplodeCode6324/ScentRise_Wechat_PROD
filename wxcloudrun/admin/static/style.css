@@ -85,7 +85,20 @@ tr:hover { background: #f8f9ff; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
 .badge-success { background: #d4edda; color: #155724; }
 .badge-warning { background: #fff3cd; color: #856404; }
+.badge-primary { background: #FFF3E0; color: #EF8E00; }
 .badge-secondary { background: #e2e3e5; color: #383d41; }
+
+/* checkbox 分组 */
+.checkbox-group {
+    display: flex; flex-wrap: wrap; gap: 8px;
+}
+.tag-checkbox {
+    display: inline-flex; align-items: center;
+    padding: 4px 10px; border: 1px solid #ddd; border-radius: 4px;
+    font-size: 13px; cursor: pointer; user-select: none; background: #fff;
+}
+.tag-checkbox:hover { border-color: #667eea; }
+.tag-checkbox input { margin-right: 4px; }
 
 .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 6px; color: #fff; font-size: 14px; z-index: 9999; opacity: 0; transition: opacity 0.3s; }
 .toast.show { opacity: 1; }

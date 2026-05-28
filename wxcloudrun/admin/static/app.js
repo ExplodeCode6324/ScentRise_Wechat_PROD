@@ -176,7 +176,10 @@ async function renderProducts() {
             <td>${p.productModel || '-'}</td>
             <td>${p.productName || '-'}</td>
             <td>${p.productSeries || '-'}</td>
-            <td>${(p.tags || []).slice(0,3).map(t=>`<span class="badge badge-secondary">${t.name}</span>`).join(' ')}</td>
+            <td>${(p.tags || []).map(t => {
+                const cls = t.category === '产品系列' ? 'badge badge-primary' : 'badge badge-secondary';
+                return `<span class="${cls}">${t.name}</span>`;
+            }).join(' ')}</td>
             <td><span class="badge ${p.isActive ? 'badge-success' : 'badge-warning'}">${p.isActive ? '上架' : '下架'}</span></td>
             <td>
                 <button class="btn btn-sm btn-outline" onclick="navigate('products/${p.id}')">编辑</button>
@@ -215,9 +218,18 @@ async function renderProductForm(id) {
         apiFetch('/api/collections'),
     ]);
     const catOpts = (cats.data||[]).map(c => `<option value="${c.id}" ${p.categoryId==c.id?'selected':''}>${c.name}</option>`).join('');
-    const tagOpts = (tags.data||[]).map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+    const seriesTags = (tags.data||[]).filter(t => t.category === '产品系列');
+    const appTags = (tags.data||[]).filter(t => t.category !== '产品系列');
     const colOpts = (cols.data||[]).map(c => `<option value="${c.id}">${c.name}</option>`).join('');
     const selectedTagIds = (p.tags||[]).map(t=>t.id);
+    const seriesCheckboxes = seriesTags.map(t => {
+        const checked = selectedTagIds.includes(t.id) ? 'checked' : '';
+        return `<label class="tag-checkbox"><input type="checkbox" name="tagIds" value="${t.id}" ${checked}> ${t.name}</label>`;
+    }).join('');
+    const appCheckboxes = appTags.map(t => {
+        const checked = selectedTagIds.includes(t.id) ? 'checked' : '';
+        return `<label class="tag-checkbox"><input type="checkbox" name="tagIds" value="${t.id}" ${checked}> ${t.name}</label>`;
+    }).join('');
     const imagePreviews = (p.images||[]).map(img => `
         <div class="image-item">
             <img src="${img.imageUrl}" class="${img.isPrimary?'primary':''}">
@@ -236,7 +248,14 @@ async function renderProductForm(id) {
                 <div class="form-group"><label>产品型号 *</label><input name="productModel" value="${p.productModel||''}" ${isEdit?'readonly':''} required></div>
                 <div class="form-group"><label>产品名称 *</label><input name="productName" value="${p.productName||''}" required></div>
                 <div class="form-group"><label>产品描述</label><textarea name="productDesc">${p.productDesc||''}</textarea></div>
-                <div class="form-group"><label>标签</label><select name="tagIds" multiple style="min-height:120px">${tagOpts}</select></div>
+                <div class="form-group">
+                  <label>标签 - 产品系列</label>
+                  <div class="checkbox-group">${seriesCheckboxes || '<span style="color:#999;font-size:13px">暂无系列标签</span>'}</div>
+                </div>
+                <div class="form-group">
+                  <label>标签 - 适用范围</label>
+                  <div class="checkbox-group">${appCheckboxes || '<span style="color:#999;font-size:13px">暂无适用范围标签</span>'}</div>
+                </div>
                 <div class="form-group"><label>所属合集</label><select name="collectionIds" multiple style="min-height:100px">${colOpts}</select></div>
                 <div class="form-group"><label>排序</label><input name="sortOrder" type="number" value="${p.sortOrder||0}"></div>
                 <div class="form-group"><label><input type="checkbox" name="isActive" ${p.isActive!==false?'checked':''}> 上架</label></div>
@@ -428,7 +447,7 @@ async function saveProduct(e, id) {
         productDesc: fd.get('productDesc'),
         isActive: fd.get('isActive') === 'on',
         sortOrder: parseInt(fd.get('sortOrder')) || 0,
-        tagIds: Array.from(e.target.querySelector('select[name="tagIds"]').selectedOptions).map(o=>parseInt(o.value)),
+        tagIds: Array.from(e.target.querySelectorAll('input[name="tagIds"]:checked')).map(o=>parseInt(o.value)),
         collectionIds: Array.from(e.target.querySelector('select[name="collectionIds"]').selectedOptions).map(o=>parseInt(o.value)),
     };
     const method = id ? 'PUT' : 'POST';
