@@ -536,6 +536,20 @@ def admin_upload_article_image(article_id):
 
 # --- 后管 公司信息 ---
 
+STORAGE_BASE = 'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la'
+
+
+def _get_or_create_company_info():
+    """获取或创建 CompanyInfo 记录；新建时 flush 以获取自增 id"""
+    from wxcloudrun.model import CompanyInfo
+    info = CompanyInfo.query.first()
+    if not info:
+        info = CompanyInfo()
+        db.session.add(info)
+        db.session.flush()
+    return info
+
+
 @app.route('/api/admin/company', methods=['GET'])
 def admin_get_company():
     from wxcloudrun.model import CompanyInfo
@@ -566,35 +580,27 @@ def admin_update_company():
 
 @app.route('/api/admin/company/logo', methods=['POST'])
 def admin_upload_company_logo():
-    from wxcloudrun.model import CompanyInfo
     file = request.files.get('file')
     if not file:
         return make_err_response('请选择文件')
-    info = CompanyInfo.query.first()
-    if not info:
-        info = CompanyInfo()
-        db.session.add(info)
+    info = _get_or_create_company_info()
     ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    cloud_path = 'company/logo.{}'.format(ext)
-    storage_url = 'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la/' + cloud_path
+    cloud_path = 'company/{}/logo.{}'.format(info.id, ext)
+    storage_url = STORAGE_BASE + cloud_path
     info.logo = storage_url
     db.session.commit()
-    return make_succ_response({'url': storage_url})
+    return make_succ_response({'url': storage_url, 'id': info.id})
 
 
 @app.route('/api/admin/company/image', methods=['POST'])
 def admin_upload_company_image():
-    from wxcloudrun.model import CompanyInfo
     file = request.files.get('file')
     if not file:
         return make_err_response('请选择文件')
-    info = CompanyInfo.query.first()
-    if not info:
-        info = CompanyInfo()
-        db.session.add(info)
+    info = _get_or_create_company_info()
     ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    cloud_path = 'company/image.{}'.format(ext)
-    storage_url = 'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la/' + cloud_path
+    cloud_path = 'company/{}/image.{}'.format(info.id, ext)
+    storage_url = STORAGE_BASE + cloud_path
     info.company_image = storage_url
     db.session.commit()
-    return make_succ_response({'url': storage_url})
+    return make_succ_response({'url': storage_url, 'id': info.id})
