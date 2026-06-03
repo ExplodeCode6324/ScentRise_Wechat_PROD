@@ -15,6 +15,18 @@ app.config['DEBUG'] = config.DEBUG
 DB_NAME = os.environ.get('MYSQL_DBNAME', 'scentrise')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://{}:{}@{}/{}'.format(config.username, config.password,
                                                                      config.db_address, DB_NAME)
+
+# 确保数据库存在（首次部署时 CynosDB 实例为空，只有 mysql/performance_schema 等系统库）
+_host, _, _port = config.db_address.partition(':')
+_port = int(_port) if _port else 3306
+_conn = pymysql.connect(host=_host, port=_port, user=config.username, password=config.password,
+                        charset='utf8mb4')
+try:
+    with _conn.cursor() as _cur:
+        _cur.execute("CREATE DATABASE IF NOT EXISTS `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci".format(DB_NAME))
+    _conn.commit()
+finally:
+    _conn.close()
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 3600,
