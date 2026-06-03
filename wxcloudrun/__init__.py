@@ -50,6 +50,15 @@ app.config.from_object('config')
 with app.app_context():
     db.create_all()
 
+    # 自动创建默认管理员（首次部署无需 webshell 手动执行 seed_admin.py）
+    from wxcloudrun.model import Admin
+    if not Admin.query.first():
+        import bcrypt
+        pw_hash = bcrypt.hashpw('admin123'.encode(), bcrypt.gensalt()).decode()
+        db.session.add(Admin(username='admin', passwd=pw_hash, real_name='管理员', role='admin', is_active=True))
+        db.session.commit()
+        app.logger.info('AUTO SEED: 管理员账号已创建 admin/admin123')
+
 # 启动时打印关键环境变量状态，便于排查
 import os as _os
 for _var in ['WECHAT_APPID', 'WECHAT_APPSECRET', 'WECHAT_ACCESS_TOKEN',
