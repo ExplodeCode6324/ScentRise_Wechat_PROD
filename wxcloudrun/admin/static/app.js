@@ -44,6 +44,16 @@ function showToast(msg, type = 'success') {
     setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 2000);
 }
 
+// ==================== Quill 编辑器 ====================
+function initQuill() {
+    if (!window.Quill || !document.getElementById('editor')) return;
+    if (window._quill) return; // 已初始化过
+    window._quill = new Quill('#editor', {
+        theme: 'snow',
+        modules: { toolbar: [['bold','italic','underline'], ['link','image'], ['clean']] }
+    });
+}
+
 // ==================== 登录/登出 ====================
 async function login(username, password) {
     const data = await apiFetch('/api/admin/login', {
@@ -110,6 +120,7 @@ function navigate(hash) {
                 document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
                 dp.render().then(html => {
                     document.getElementById('app-content').innerHTML = html;
+                    if (type === 'articles') setTimeout(initQuill, 100);
                 }).catch(e => {
                     document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: ' + e.message + '</p></div>';
                 });
@@ -124,6 +135,7 @@ function navigate(hash) {
     document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
     page.render().then(html => {
         document.getElementById('app-content').innerHTML = html;
+        if (hash.startsWith('articles/')) setTimeout(initQuill, 100);
     }).catch(e => {
         document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: ' + e.message + '</p></div>';
     });
@@ -510,7 +522,7 @@ async function uploadCollectionCover(id) {
 async function saveArticle(e, id) {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const content = document.querySelector('#editor .ql-editor').innerHTML;
+    const content = window._quill ? window._quill.root.innerHTML : '';
     const body = { title: fd.get('title'), author: fd.get('author'), content, isPublished: fd.get('isPublished')==='1', sortOrder: parseInt(fd.get('sortOrder'))||0 };
     const method = id ? 'PUT' : 'POST';
     const url = id ? '/api/admin/articles/'+id : '/api/admin/articles';

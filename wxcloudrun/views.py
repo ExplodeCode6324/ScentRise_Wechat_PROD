@@ -128,10 +128,16 @@ def admin_update_product(product_id):
     if not product:
         return make_err_response('产品不存在')
     data = request.get_json()
-    for field in ['product_series', 'product_name', 'product_model', 'product_desc',
-                   'product_image', 'category_id', 'sort_order']:
-        if field in data:
-            setattr(product, field, data[field])
+    # 字段映射：前端 camelCase → 后端 snake_case
+    _field_map = {
+        'productSeries': 'product_series', 'productName': 'product_name',
+        'productModel': 'product_model', 'productDesc': 'product_desc',
+        'productImage': 'product_image', 'categoryId': 'category_id',
+        'sortOrder': 'sort_order',
+    }
+    for js_field, py_field in _field_map.items():
+        if js_field in data:
+            setattr(product, py_field, data[js_field])
     if 'productImages' in data:
         product.product_images = json.dumps(data['productImages'], ensure_ascii=False)
     if 'isActive' in data:
