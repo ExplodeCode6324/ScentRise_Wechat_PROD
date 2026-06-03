@@ -15,17 +15,15 @@ RUN set -ex \
 
 # ============================================
 # 依赖层：先装 pip 包（利用 Docker 缓存，代码变更无需重装依赖）
-# Alpine 3.19 精简镜像不含 gcc，需临时安装编译 greenlet/MarkupSafe/SQLAlchemy
+# greenlet 3.1.1+ 有 musllinux 预编译包，无需 gcc
 # ============================================
 WORKDIR /app
 COPY requirements.txt .
 
-RUN apk add --no-cache --virtual .build-deps gcc musl-dev python3-dev \
-    && pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
+RUN pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
     && pip config set global.trusted-host mirrors.cloud.tencent.com \
     && pip install --no-cache-dir --upgrade pip --break-system-packages \
-    && pip install --no-cache-dir -r requirements.txt --break-system-packages \
-    && apk del .build-deps
+    && pip install --no-cache-dir -r requirements.txt --break-system-packages
 
 # ============================================
 # 代码层
