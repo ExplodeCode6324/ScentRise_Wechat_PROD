@@ -47,7 +47,8 @@ function showToast(msg, type = 'success') {
 // ==================== Quill 编辑器 ====================
 function initQuill() {
     if (!window.Quill || !document.getElementById('editor')) return;
-    if (window._quill) return; // 已初始化过
+    // 上一次的 Quill 实例可能已脱离 DOM（页面切换后），重新创建
+    if (window._quill) window._quill = null;
     window._quill = new Quill('#editor', {
         theme: 'snow',
         modules: { toolbar: [['bold','italic','underline'], ['link','image'], ['clean']] }
