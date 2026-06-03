@@ -21,8 +21,8 @@ COPY requirements.txt .
 
 RUN pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
     && pip config set global.trusted-host mirrors.cloud.tencent.com \
-    && pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir --upgrade pip --break-system-packages \
+    && pip install --no-cache-dir -r requirements.txt --break-system-packages
 
 # ============================================
 # 代码层
