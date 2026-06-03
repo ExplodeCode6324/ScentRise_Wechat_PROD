@@ -190,7 +190,7 @@ def upload(file_data: bytes, cloud_path: str, content_type: str = 'image/png') -
 
         logger.info('storage.upload OK: %s -> %s', cloud_path, file_id)
         # 构造 CDN 直链（网页端可直接访问，需存储桶开通公共读）
-        cdn = 'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la'
+        cdn = 'https://7072-prod-d3gye5fi93c7d3d52-1439519788.tcb.qcloud.la'
         cdn_url = f'{cdn}/{cloud_path}'
         return {
             'success': True,
@@ -214,7 +214,7 @@ def get_download_url(cloud_path_or_fileid: str) -> str:
         return cloud_path_or_fileid
 
     # 没有 file_id 时用 CDN 兜底
-    cdn = f'https://7072-prod-d5gzqpr0f7ac5e384-1437634411.tcb.qcloud.la'
+    cdn = f'https://7072-prod-d3gye5fi93c7d3d52-1439519788.tcb.qcloud.la'
     return f'{cdn}/{cloud_path_or_fileid}'
 
 
