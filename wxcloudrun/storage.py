@@ -13,6 +13,12 @@ import time
 import logging
 import uuid
 import requests
+import urllib3
+
+# CloudRun 容器出口网络存在中间代理（安全网关），其自签名证书会导致
+# api.weixin.qq.com 的 SSL 证书验证失败。平台内部代理已保证传输加密，
+# 此处禁用 SSL 警告和证书验证以适配平台网络环境。
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger('log')
 
@@ -60,6 +66,7 @@ def _get_access_token() -> str:
             'secret': WECHAT_APPSECRET,
         },
         timeout=TIMEOUT,
+        verify=False,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -114,6 +121,7 @@ def upload(file_data: bytes, cloud_path: str, content_type: str = 'image/png') -
                 'path': cloud_path,
             },
             timeout=TIMEOUT,
+            verify=False,
         )
         resp.raise_for_status()
         info = resp.json()
@@ -173,6 +181,7 @@ def upload(file_data: bytes, cloud_path: str, content_type: str = 'image/png') -
                 'Content-Type': f'multipart/form-data; boundary={boundary}',
             },
             timeout=TIMEOUT,
+            verify=False,
         )
 
         logger.info('storage.upload step2 response: HTTP %d body=%s',
@@ -264,6 +273,7 @@ def delete_files(urls: list) -> dict:
             params={'access_token': access_token},
             json={'env': TCB_ENV_ID, 'fileid_list': file_ids},
             timeout=TIMEOUT,
+            verify=False,
         )
         resp.raise_for_status()
         data = resp.json()
