@@ -13,6 +13,7 @@ from wxcloudrun.model import Product, Article, Category, CompanyInfo, Admin
 from wxcloudrun.response import make_succ_empty_response, make_succ_response, make_err_response
 from wxcloudrun.storage import upload as storage_upload
 from wxcloudrun.storage import delete_files as storage_delete
+from wxcloudrun.admin.auth import require_admin
 
 
 @app.route('/')
@@ -98,9 +99,22 @@ def admin_login():
     return make_succ_response({'token': token, 'admin': admin.to_dict()})
 
 
+@app.route('/api/admin/verify', methods=['GET'])
+@require_admin
+def admin_verify():
+    """验证 token 有效性，返回当前管理员信息"""
+    from flask import g
+    return make_succ_response({
+        'admin_id': g.admin_id,
+        'username': g.admin_username,
+        'role': g.admin_role,
+    })
+
+
 # --- 产品 CRUD ---
 
 @app.route('/api/admin/products', methods=['POST'])
+@require_admin
 def admin_create_product():
     data = request.get_json()
     product = Product(
@@ -123,6 +137,7 @@ def admin_create_product():
 
 
 @app.route('/api/admin/products/<int:product_id>', methods=['PUT'])
+@require_admin
 def admin_update_product(product_id):
     product = get_product_by_id(product_id)
     if not product:
@@ -150,6 +165,7 @@ def admin_update_product(product_id):
 
 
 @app.route('/api/admin/products/<int:product_id>', methods=['DELETE'])
+@require_admin
 def admin_delete_product(product_id):
     product = get_product_by_id(product_id)
     if not product:
@@ -178,6 +194,7 @@ def admin_delete_product(product_id):
 # --- Excel 导入 ---
 
 @app.route('/api/admin/import', methods=['POST'])
+@require_admin
 def admin_import_excel():
     """Excel 导入：遇新产品系列/标签自动创建，重复型号自动 UPDATE"""
     data = request.get_json()
@@ -244,6 +261,7 @@ def admin_import_excel():
 # --- 文章管理 ---
 
 @app.route('/api/admin/articles', methods=['POST'])
+@require_admin
 def admin_create_article():
     data = request.get_json()
     article = Article(
@@ -259,6 +277,7 @@ def admin_create_article():
 
 
 @app.route('/api/admin/articles/<int:article_id>', methods=['PUT'])
+@require_admin
 def admin_update_article(article_id):
     article = get_article_by_id(article_id)
     if not article:
@@ -276,6 +295,7 @@ def admin_update_article(article_id):
 
 
 @app.route('/api/admin/articles/<int:article_id>', methods=['DELETE'])
+@require_admin
 def admin_delete_article(article_id):
     article = get_article_by_id(article_id)
     if not article:
@@ -288,6 +308,7 @@ def admin_delete_article(article_id):
 # --- 后管 产品列表/详情（分页、搜索） ---
 
 @app.route('/api/admin/products', methods=['GET'])
+@require_admin
 def admin_get_products():
     category_id = request.args.get('category_id', type=int)
     keyword = request.args.get('keyword')
@@ -298,6 +319,7 @@ def admin_get_products():
 
 
 @app.route('/api/admin/products/<int:product_id>', methods=['GET'])
+@require_admin
 def admin_get_product(product_id):
     product = get_product_by_id(product_id)
     if not product:
@@ -312,6 +334,7 @@ def admin_get_product(product_id):
 # --- 后管 产品图片上传 ---
 
 @app.route('/api/admin/products/<int:product_id>/images', methods=['POST'])
+@require_admin
 def admin_upload_product_image(product_id):
     product = get_product_by_id(product_id)
     if not product:
@@ -343,6 +366,7 @@ def admin_upload_product_image(product_id):
 
 
 @app.route('/api/admin/products/<int:product_id>/images/<int:image_id>', methods=['DELETE'])
+@require_admin
 def admin_delete_product_image(product_id, image_id):
     from wxcloudrun.model import ProductImage
     img = ProductImage.query.filter_by(id=image_id, product_id=product_id).first()
@@ -366,12 +390,14 @@ def admin_delete_product_image(product_id, image_id):
 # --- 后管 标签 CRUD ---
 
 @app.route('/api/admin/tags', methods=['GET'])
+@require_admin
 def admin_get_tags():
     category = request.args.get('category')
     return make_succ_response(get_tags(category=category))
 
 
 @app.route('/api/admin/tags/<int:tag_id>', methods=['GET'])
+@require_admin
 def admin_get_tag(tag_id):
     from wxcloudrun.model import Tag
     tag = Tag.query.get(tag_id)
@@ -381,6 +407,7 @@ def admin_get_tag(tag_id):
 
 
 @app.route('/api/admin/tags', methods=['POST'])
+@require_admin
 def admin_create_tag():
     from wxcloudrun.model import Tag
     data = request.get_json()
@@ -392,6 +419,7 @@ def admin_create_tag():
 
 
 @app.route('/api/admin/tags/<int:tag_id>', methods=['PUT'])
+@require_admin
 def admin_update_tag(tag_id):
     from wxcloudrun.model import Tag
     tag = Tag.query.get(tag_id)
@@ -408,6 +436,7 @@ def admin_update_tag(tag_id):
 
 
 @app.route('/api/admin/tags/<int:tag_id>', methods=['DELETE'])
+@require_admin
 def admin_delete_tag(tag_id):
     from wxcloudrun.model import Tag
     tag = Tag.query.get(tag_id)
@@ -419,6 +448,7 @@ def admin_delete_tag(tag_id):
 
 
 @app.route('/api/admin/tags/<int:tag_id>/image', methods=['POST'])
+@require_admin
 def admin_upload_tag_image(tag_id):
     from wxcloudrun.model import Tag
     tag = Tag.query.get(tag_id)
@@ -448,11 +478,13 @@ def admin_upload_tag_image(tag_id):
 # --- 后管 合集 CRUD ---
 
 @app.route('/api/admin/collections', methods=['GET'])
+@require_admin
 def admin_get_collections():
     return make_succ_response(get_collections(carousel_only=False))
 
 
 @app.route('/api/admin/collections/<int:col_id>', methods=['GET'])
+@require_admin
 def admin_get_collection(col_id):
     from wxcloudrun.model import Collection
     col = Collection.query.get(col_id)
@@ -462,6 +494,7 @@ def admin_get_collection(col_id):
 
 
 @app.route('/api/admin/collections', methods=['POST'])
+@require_admin
 def admin_create_collection():
     from wxcloudrun.model import Collection
     data = request.get_json()
@@ -475,6 +508,7 @@ def admin_create_collection():
 
 
 @app.route('/api/admin/collections/<int:col_id>', methods=['PUT'])
+@require_admin
 def admin_update_collection(col_id):
     from wxcloudrun.model import Collection
     col = Collection.query.get(col_id)
@@ -495,6 +529,7 @@ def admin_update_collection(col_id):
 
 
 @app.route('/api/admin/collections/<int:col_id>', methods=['DELETE'])
+@require_admin
 def admin_delete_collection(col_id):
     from wxcloudrun.model import Collection
     col = Collection.query.get(col_id)
@@ -506,6 +541,7 @@ def admin_delete_collection(col_id):
 
 
 @app.route('/api/admin/collections/<int:col_id>/products', methods=['PUT'])
+@require_admin
 def admin_update_collection_products(col_id):
     from wxcloudrun.model import Collection, collection_products
     col = Collection.query.get(col_id)
@@ -523,6 +559,7 @@ def admin_update_collection_products(col_id):
 
 
 @app.route('/api/admin/collections/<int:col_id>/image', methods=['POST'])
+@require_admin
 def admin_upload_collection_image(col_id):
     from wxcloudrun.model import Collection
     col = Collection.query.get(col_id)
@@ -545,6 +582,7 @@ def admin_upload_collection_image(col_id):
 # --- 后管 文章列表（含草稿） ---
 
 @app.route('/api/admin/articles', methods=['GET'])
+@require_admin
 def admin_get_articles():
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('page_size', 20, type=int)
@@ -555,6 +593,7 @@ def admin_get_articles():
 
 
 @app.route('/api/admin/articles/<int:article_id>', methods=['GET'])
+@require_admin
 def admin_get_article(article_id):
     article = get_article_by_id(article_id)
     if not article:
@@ -563,6 +602,7 @@ def admin_get_article(article_id):
 
 
 @app.route('/api/admin/articles/<int:article_id>/image', methods=['POST'])
+@require_admin
 def admin_upload_article_image(article_id):
     article = get_article_by_id(article_id)
     if not article:
@@ -596,6 +636,7 @@ def _get_or_create_company_info():
 
 
 @app.route('/api/admin/company', methods=['GET'])
+@require_admin
 def admin_get_company():
     from wxcloudrun.model import CompanyInfo
     info = CompanyInfo.query.first()
@@ -603,6 +644,7 @@ def admin_get_company():
 
 
 @app.route('/api/admin/company', methods=['PUT'])
+@require_admin
 def admin_update_company():
     from wxcloudrun.model import CompanyInfo
     data = request.get_json()
@@ -624,6 +666,7 @@ def admin_update_company():
 
 
 @app.route('/api/admin/company/logo', methods=['POST'])
+@require_admin
 def admin_upload_company_logo():
     file = request.files.get('file')
     if not file:
@@ -641,6 +684,7 @@ def admin_upload_company_logo():
 
 
 @app.route('/api/admin/company/qr', methods=['POST'])
+@require_admin
 def admin_upload_company_qr():
     file = request.files.get('file')
     if not file:
@@ -658,6 +702,7 @@ def admin_upload_company_qr():
 
 
 @app.route('/api/admin/company/image', methods=['POST'])
+@require_admin
 def admin_upload_company_image():
     file = request.files.get('file')
     if not file:

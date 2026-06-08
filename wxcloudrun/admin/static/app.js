@@ -670,11 +670,30 @@ document.querySelectorAll('.sidebar-nav a').forEach(a => {
     a.addEventListener('click', e => { e.preventDefault(); navigate(a.dataset.nav); });
 });
 
-// 启动
-if (STATE.token) {
-    showApp(true);
-    document.getElementById('topbar-user').textContent = (STATE.admin && STATE.admin.username) || '';
-    navigate(location.hash.slice(1) || '');
-} else {
-    showLogin(true);
-}
+// 启动：先验证 token 有效性再决定显示哪个页面
+(async function init() {
+    if (STATE.token) {
+        // 显示加载状态（防止闪烁）
+        showLogin(false);
+        showApp(false);
+        try {
+            const verifyData = await apiFetch('/api/admin/verify');
+            // token 有效，显示管理页面
+            STATE.admin = verifyData.data || verifyData;
+            localStorage.setItem('admin_user', JSON.stringify(STATE.admin));
+            document.getElementById('topbar-user').textContent = STATE.admin.username || '';
+            showApp(true);
+            navigate(location.hash.slice(1) || '');
+        } catch (e) {
+            // token 无效或已过期，清除并显示登录页
+            console.warn('Token 验证失败:', e.message);
+            STATE.token = null;
+            STATE.admin = null;
+            localStorage.removeItem('admin_token');
+            localStorage.removeItem('admin_user');
+            showLogin(true);
+        }
+    } else {
+        showLogin(true);
+    }
+})();
