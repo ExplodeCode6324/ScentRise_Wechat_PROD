@@ -105,6 +105,20 @@ function navigate(hash) {
     location.hash = hash;
     const page = PAGES[hash];
     if (!page) {
+        // 处理 collections/:id/products（合集产品管理）
+        const cpMatch = hash.match(/^collections\/(\d+)\/products$/);
+        if (cpMatch) {
+            const colId = parseInt(cpMatch[1]);
+            document.getElementById('current-page-title').textContent = '合集产品管理';
+            document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
+            renderCollectionProducts(colId).then(html => {
+                document.getElementById('app-content').innerHTML = html;
+            }).catch(e => {
+                document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: ' + e.message + '</p></div>';
+            });
+            highlightNav('collections');
+            return;
+        }
         // 处理动态路由: products/{id}, tags/{id}, collections/{id}, articles/{id}
         const match = hash.match(/^(products|tags|collections|articles)\/(\d+)$/);
         if (match) {
@@ -377,6 +391,83 @@ async function renderCollectionForm(id) {
             <div style="margin-top:12px"><strong>封面</strong> ${c.coverImage?`<img src="${c.coverImage}" class="img-preview">`:''}
             <div><input type="file" id="col-cover-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadCollectionCover(${id})">上传封面</button></div></div>` : ''}
         </div>`;
+}
+
+// --- 合集产品管理 ---
+async function renderCollectionProducts(colId) {
+    const data = await apiFetch('/api/admin/collections/' + colId + '/products');
+    const col = data.data.collection;
+    const linked = data.data.linkedProducts || [];
+    const allProds = data.data.allProducts || [];
+    const linkedIds = new Set(linked.map(p => p.id));
+
+    const leftRows = allProds.map(p => {
+        const checked = linkedIds.has(p.id) ? 'checked' : '';
+        return `<label class="cp-item ${checked?'selected':''}">
+            <input type="checkbox" name="cp_product" value="${p.id}" ${checked} onchange="this.parentElement.classList.toggle('selected',this.checked)">
+            <span class="cp-info"><strong>${p.productName||'-'}</strong> <small>${p.productModel||''}</small></span>
+            <span class="cp-series">${p.productSeries||''}</span>
+        </label>`;
+    }).join('');
+
+    const rightRows = linked.map((p, i) => `
+        <div class="cp-linked-item" data-pid="${p.id}">
+            <span class="cp-order">${i+1}</span>
+            <span class="cp-info"><strong>${p.productName||'-'}</strong> <small>${p.productModel||''}</small></span>
+            <button class="btn btn-sm" onclick="removeLinkedProduct(this, ${p.id})" title="移除">×</button>
+        </div>`).join('') || '<p style="color:#999;padding:12px">暂未关联产品</p>';
+
+    return `
+        <div class="page-header">
+            <h2>合集产品管理：${col.name}</h2>
+            <button class="btn btn-outline" onclick="navigate('collections')">← 返回合集列表</button>
+        </div>
+        <div class="cp-panel">
+            <div class="cp-left card">
+                <div class="card-title">可选产品 <span style="font-weight:normal;font-size:12px;color:#999">(勾选后保存)</span></div>
+                <input type="text" class="cp-search" placeholder="搜索产品..." oninput="filterCollectionProducts(this)">
+                <div class="cp-list" id="cp-all-list">${leftRows}</div>
+            </div>
+            <div class="cp-right card">
+                <div class="card-title">已选产品 <span style="font-weight:normal;font-size:12px;color:#999" id="cp-count">${linked.length} 个</span></div>
+                <div class="cp-linked-list" id="cp-linked-list">${rightRows}</div>
+            </div>
+        </div>
+        <div style="margin-top:16px;text-align:center">
+            <button class="btn btn-primary" onclick="saveCollectionProducts(${colId})" style="min-width:120px">💾 保存</button>
+        </div>`;
+}
+
+async function saveCollectionProducts(colId) {
+    const checked = document.querySelectorAll('input[name="cp_product"]:checked');
+    const productIds = Array.from(checked).map(cb => parseInt(cb.value));
+    await apiFetch('/api/admin/collections/' + colId + '/products', {
+        method: 'PUT',
+        body: JSON.stringify({ product_ids: productIds })
+    });
+    showToast('已保存 (' + productIds.length + ' 个产品)');
+    navigate('collections/' + colId + '/products');
+}
+
+function removeLinkedProduct(btn, pid) {
+    const cb = document.querySelector('input[name="cp_product"][value="' + pid + '"]');
+    if (cb) { cb.checked = false; cb.parentElement.classList.remove('selected'); }
+    btn.parentElement.remove();
+    updateLinkedCount();
+}
+
+function filterCollectionProducts(input) {
+    const kw = input.value.toLowerCase();
+    document.querySelectorAll('#cp-all-list .cp-item').forEach(item => {
+        const text = item.textContent.toLowerCase();
+        item.style.display = text.includes(kw) ? '' : 'none';
+    });
+}
+
+function updateLinkedCount() {
+    const count = document.querySelectorAll('#cp-linked-list .cp-linked-item').length;
+    const el = document.getElementById('cp-count');
+    if (el) el.textContent = count + ' 个';
 }
 
 // --- 文章 ---

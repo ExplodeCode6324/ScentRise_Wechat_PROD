@@ -540,6 +540,34 @@ def admin_delete_collection(col_id):
     return make_succ_empty_response()
 
 
+@app.route('/api/admin/collections/<int:col_id>/products', methods=['GET'])
+@require_admin
+def admin_get_collection_products(col_id):
+    """获取合集已关联的产品列表 + 全部可选产品"""
+    from wxcloudrun.model import Collection, collection_products
+    col = Collection.query.get(col_id)
+    if not col:
+        return make_err_response('合集不存在')
+    # 合集已关联产品（按 sort_order 排序）
+    linked = db.session.query(Product, collection_products.c.sort_order)\
+        .join(collection_products, Product.id == collection_products.c.product_id)\
+        .filter(collection_products.c.collection_id == col_id)\
+        .order_by(collection_products.c.sort_order)\
+        .all()
+    linked_products = []
+    for p, so in linked:
+        d = p.to_dict()
+        d['_sortOrder'] = so
+        linked_products.append(d)
+    # 全部产品（供选择）
+    all_products, _ = get_products(page=1, page_size=9999, include_inactive=True)
+    return make_succ_response({
+        'collection': col.to_dict(),
+        'linkedProducts': linked_products,
+        'allProducts': all_products,
+    })
+
+
 @app.route('/api/admin/collections/<int:col_id>/products', methods=['PUT'])
 @require_admin
 def admin_update_collection_products(col_id):

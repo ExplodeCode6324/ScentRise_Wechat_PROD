@@ -145,6 +145,35 @@ tr:hover { background: #f8f9ff; }
 .dual-panel .panel-item.selected { background: #e8eaff; }
 .dual-panel .panel-actions { display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 0 8px; }
 
+/* 合集产品管理双面板（新版） */
+.cp-panel { display: flex; gap: 16px; margin-bottom: 8px; }
+.cp-panel .cp-left { flex: 1; }
+.cp-panel .cp-right { flex: 0 0 360px; }
+.cp-search { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; margin-bottom: 8px; }
+.cp-list { max-height: 420px; overflow-y: auto; }
+.cp-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 4px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #f0f0f0;
+}
+.cp-item:hover { background: #f8f9ff; }
+.cp-item.selected { background: #eef0ff; }
+.cp-item input[type="checkbox"] { flex-shrink: 0; }
+.cp-item .cp-info { flex: 1; }
+.cp-item .cp-info strong { display: block; }
+.cp-item .cp-info small { color: #999; }
+.cp-item .cp-series { color: #667eea; font-size: 12px; flex-shrink: 0; }
+.cp-linked-list { max-height: 420px; overflow-y: auto; }
+.cp-linked-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 4px; font-size: 13px;
+    border-bottom: 1px solid #f0f0f0; background: #fafbff;
+}
+.cp-linked-item .cp-order { color: #667eea; font-weight: bold; width: 24px; flex-shrink: 0; }
+.cp-linked-item .cp-info { flex: 1; }
+.cp-linked-item .cp-info strong { display: block; }
+.cp-linked-item .cp-info small { color: #999; }
+
 /* 分页 */
 .pagination { display: flex; gap: 8px; align-items: center; margin-top: 16px; justify-content: center; }
 .pagination button { padding: 4px 12px; border: 1px solid #ddd; background: #fff; border-radius: 4px; cursor: pointer; font-size: 13px; }
