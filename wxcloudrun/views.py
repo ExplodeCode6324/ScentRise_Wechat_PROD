@@ -751,3 +751,21 @@ def admin_upload_company_image():
     info.company_image = storage_url
     db.session.commit()
     return make_succ_response({'url': storage_url, 'id': info.id})
+
+
+# ==================== 临时：同步 Tag.icon → Category.icon ====================
+
+@app.route('/api/admin/sync-category-icons', methods=['POST'])
+@require_admin
+def admin_sync_category_icons():
+    """一次性同步：将 category='产品系列' 的 Tag.icon 复制到同名 Category.icon"""
+    from wxcloudrun.model import Tag, Category
+    tags = Tag.query.filter(Tag.category == '产品系列', Tag.icon.isnot(None), Tag.icon != '').all()
+    updated = []
+    for tag in tags:
+        cat = Category.query.filter(Category.name == tag.name).first()
+        if cat and not cat.icon:
+            cat.icon = tag.icon
+            updated.append({'category_id': cat.id, 'name': cat.name, 'icon': cat.icon})
+    db.session.commit()
+    return make_succ_response({'synced': len(updated), 'details': updated})
