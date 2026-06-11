@@ -29,8 +29,11 @@ finally:
     _conn.close()
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_recycle': 3600,
+    'pool_size': 5,
+    'max_overflow': 10,
+    'pool_recycle': 1800,
     'pool_pre_ping': True,
+    'pool_timeout': 10,
 }
 
 # 初始化DB操作对象
@@ -42,6 +45,18 @@ from wxcloudrun import views
 # 加载后管 Blueprint
 from wxcloudrun.admin import admin_bp
 app.register_blueprint(admin_bp)
+
+# 全局异常处理：确保所有错误都返回 JSON，防止 HTML 错误页导致前端 JSON 解析失败
+from wxcloudrun.response import make_err_response
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    app.logger.error(f'Unhandled error: {e}', exc_info=True)
+    return make_err_response('服务器内部错误'), 500
+
+@app.errorhandler(404)
+def handle_404(e):
+    return make_err_response('接口不存在'), 404
 
 # 加载配置
 app.config.from_object('config')
