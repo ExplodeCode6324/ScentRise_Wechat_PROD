@@ -116,21 +116,25 @@ let _artPage = 1, _artDebounce = null;
  */
 function renderPagination(total, page, pageSize, goFn) {
     const totalPages = Math.ceil(total / pageSize);
-    if (totalPages <= 1) return '';
-    let html = `<div class="pagination-bar"><span class="pagination-info">共 ${total} 条，第 ${page}/${totalPages} 页</span>`;
-    // 上一页
-    if (page > 1) html += `<button class="pagination-btn" onclick="${goFn}(${page-1})">‹ 上一页</button>`;
-    else html += `<button class="pagination-btn" disabled>‹ 上一页</button>`;
-    // 页码（最多 7 个按钮）
-    const maxBtns = 7;
-    let start = Math.max(1, page - 3), end = Math.min(totalPages, start + maxBtns - 1);
-    if (end - start < maxBtns - 1) start = Math.max(1, end - maxBtns + 1);
-    if (start > 1) { html += `<button class="pagination-btn" onclick="${goFn}(1)">1</button>`; if (start > 2) html += '<span class="pagination-ellipsis">…</span>'; }
-    for (let i = start; i <= end; i++) html += `<button class="pagination-btn${i===page?' active':''}" onclick="${goFn}(${i})">${i}</button>`;
-    if (end < totalPages) { if (end < totalPages-1) html += '<span class="pagination-ellipsis">…</span>'; html += `<button class="pagination-btn" onclick="${goFn}(${totalPages})">${totalPages}</button>`; }
-    // 下一页
-    if (page < totalPages) html += `<button class="pagination-btn" onclick="${goFn}(${page+1})">下一页 ›</button>`;
-    else html += `<button class="pagination-btn" disabled>下一页 ›</button>`;
+    let html = `<div class="pagination-bar"><span class="pagination-info">共 ${total} 条</span>`;
+    if (totalPages > 1) {
+        html += `<span class="pagination-info">，第 ${page}/${totalPages} 页</span>`;
+        // 上一页
+        if (page > 1) html += `<button class="pagination-btn" onclick="${goFn}(${page-1})">‹ 上一页</button>`;
+        else html += `<button class="pagination-btn" disabled>‹ 上一页</button>`;
+        // 页码（最多 7 个按钮）
+        const maxBtns = 7;
+        let start = Math.max(1, page - 3), end = Math.min(totalPages, start + maxBtns - 1);
+        if (end - start < maxBtns - 1) start = Math.max(1, end - maxBtns + 1);
+        if (start > 1) { html += `<button class="pagination-btn" onclick="${goFn}(1)">1</button>`; if (start > 2) html += '<span class="pagination-ellipsis">…</span>'; }
+        for (let i = start; i <= end; i++) html += `<button class="pagination-btn${i===page?' active':''}" onclick="${goFn}(${i})">${i}</button>`;
+        if (end < totalPages) { if (end < totalPages-1) html += '<span class="pagination-ellipsis">…</span>'; html += `<button class="pagination-btn" onclick="${goFn}(${totalPages})">${totalPages}</button>`; }
+        // 下一页
+        if (page < totalPages) html += `<button class="pagination-btn" onclick="${goFn}(${page+1})">下一页 ›</button>`;
+        else html += `<button class="pagination-btn" disabled>下一页 ›</button>`;
+    } else {
+        html += `<span class="pagination-info">（共 1 页）</span>`;
+    }
     html += '</div>';
     return html;
 }
