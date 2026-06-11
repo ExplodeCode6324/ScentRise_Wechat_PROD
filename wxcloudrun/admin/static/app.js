@@ -89,16 +89,58 @@ function showApp(show) {
 // ==================== 路由 ====================
 const PAGES = {
     '': { title: '仪表盘', render: renderDashboard },
-    'products': { title: '产品管理', render: renderProducts },
+    'products': { title: '产品管理', render: () => renderProducts(true) },
     'products/new': { title: '添加产品', render: renderProductForm },
-    'tags': { title: '标签管理', render: renderTags },
+    'tags': { title: '标签管理', render: () => renderTags(true) },
     'tags/new': { title: '添加标签', render: renderTagForm },
-    'collections': { title: '合集管理', render: renderCollections },
+    'collections': { title: '合集管理', render: () => renderCollections(true) },
     'collections/new': { title: '添加合集', render: renderCollectionForm },
-    'articles': { title: '文章管理', render: renderArticles },
+    'articles': { title: '文章管理', render: () => renderArticles(true) },
     'articles/new': { title: '写文章', render: renderArticleEditor },
     'company': { title: '公司信息', render: renderCompany },
 };
+
+// ==================== 分页组件 ====================
+// 各列表页的分页状态（模块级闭包）
+let _prodPage = 1, _prodKeyword = '', _prodDebounce = null;
+let _tagPage = 1, _tagDebounce = null;
+let _colPage = 1, _colDebounce = null;
+let _artPage = 1, _artDebounce = null;
+
+/**
+ * 生成分页条 HTML
+ * @param {number} total 总记录数
+ * @param {number} page 当前页码
+ * @param {number} pageSize 每页条数
+ * @param {string} goFn 翻页函数名（全局可见，如 'goProductsPage'）
+ */
+function renderPagination(total, page, pageSize, goFn) {
+    const totalPages = Math.ceil(total / pageSize);
+    if (totalPages <= 1) return '';
+    let html = `<div class="pagination-bar"><span class="pagination-info">共 ${total} 条，第 ${page}/${totalPages} 页</span>`;
+    // 上一页
+    if (page > 1) html += `<button class="pagination-btn" onclick="${goFn}(${page-1})">‹ 上一页</button>`;
+    else html += `<button class="pagination-btn" disabled>‹ 上一页</button>`;
+    // 页码（最多 7 个按钮）
+    const maxBtns = 7;
+    let start = Math.max(1, page - 3), end = Math.min(totalPages, start + maxBtns - 1);
+    if (end - start < maxBtns - 1) start = Math.max(1, end - maxBtns + 1);
+    if (start > 1) { html += `<button class="pagination-btn" onclick="${goFn}(1)">1</button>`; if (start > 2) html += '<span class="pagination-ellipsis">…</span>'; }
+    for (let i = start; i <= end; i++) html += `<button class="pagination-btn${i===page?' active':''}" onclick="${goFn}(${i})">${i}</button>`;
+    if (end < totalPages) { if (end < totalPages-1) html += '<span class="pagination-ellipsis">…</span>'; html += `<button class="pagination-btn" onclick="${goFn}(${totalPages})">${totalPages}</button>`; }
+    // 下一页
+    if (page < totalPages) html += `<button class="pagination-btn" onclick="${goFn}(${page+1})">下一页 ›</button>`;
+    else html += `<button class="pagination-btn" disabled>下一页 ›</button>`;
+    html += '</div>';
+    return html;
+}
+
+/** 通用刷新：调用 renderFn 并将结果写入 #app-content */
+async function refreshContent(renderFn) {
+    document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
+    try { document.getElementById('app-content').innerHTML = await renderFn(); }
+    catch(e) { document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: '+e.message+'</p></div>'; }
+}
 
 function navigate(hash) {
     STATE.currentPage = hash;
@@ -194,9 +236,25 @@ async function renderDashboard() {
 }
 
 // --- 产品 ---
-async function renderProducts() {
-    const data = await apiFetch('/api/admin/products?page=1&page_size=20');
-    const cats = await apiFetch('/api/categories');
+// --- 产品列表（分页 + 搜索） ---
+
+// 翻页 / 搜索入口（全局可见，供 onclick 和 oninput 调用）
+function goProductsPage(pg) { _prodPage = pg; refreshContent(() => renderProducts(false)); }
+function searchProducts() {
+    clearTimeout(_prodDebounce);
+    _prodDebounce = setTimeout(() => {
+        _prodKeyword = (document.getElementById('search-input')?.value || '').trim();
+        _prodPage = 1;
+        refreshContent(() => renderProducts(false));
+    }, 400);
+}
+
+async function renderProducts(reset = false) {
+    if (reset) { _prodPage = 1; _prodKeyword = ''; }
+    const params = new URLSearchParams({ page: _prodPage, page_size: 20 });
+    if (_prodKeyword) params.set('keyword', _prodKeyword);
+    const data = await apiFetch('/api/admin/products?' + params);
+    const cats = reset ? await apiFetch('/api/categories') : { data: [] };  // 仅首次加载分类（用于后续引用）
     const rows = (data.data.list || []).map(p => `
         <tr>
             <td>${p.productImage ? `<img src="${p.productImage}" class="img-thumb">` : '-'}</td>
@@ -224,11 +282,13 @@ async function renderProducts() {
             </div>
         </div>
         <div class="card">
-            <input type="text" id="search-input" placeholder="搜索产品名称/型号..." style="width:200px;padding:6px 10px;border:1px solid #ddd;border-radius:4px;margin-bottom:12px"
+            <input type="text" id="search-input" placeholder="搜索产品名称/型号..." value="${_prodKeyword||''}"
+                style="width:200px;padding:6px 10px;border:1px solid #ddd;border-radius:4px;margin-bottom:12px"
                 oninput="searchProducts()">
             <table><thead><tr>
                 <th>缩略图</th><th>型号</th><th>产品名</th><th>系列</th><th>标签</th><th>状态</th><th>操作</th>
             </tr></thead><tbody>${rows}</tbody></table>
+            ${renderPagination(data.data.total, data.data.page, data.data.pageSize, 'goProductsPage')}
         </div>`;
 }
 
@@ -303,10 +363,14 @@ async function renderProductForm(id) {
     `;
 }
 
-// --- 标签 ---
-async function renderTags() {
-    const data = await apiFetch('/api/admin/tags');
-    const rows = (data.data||[]).map(t => `
+// --- 标签列表（分页） ---
+
+function goTagsPage(pg) { _tagPage = pg; refreshContent(() => renderTags(false)); }
+
+async function renderTags(reset = false) {
+    if (reset) _tagPage = 1;
+    const data = await apiFetch(`/api/admin/tags?page=${_tagPage}&page_size=20`);
+    const rows = (data.data.list || []).map(t => `
         <tr>
             <td>${t.icon ? `<img src="${t.icon}" class="img-thumb">` : '-'}</td>
             <td>${t.name}</td>
@@ -323,6 +387,7 @@ async function renderTags() {
         <div class="card">
             <table><thead><tr><th>图标</th><th>名称</th><th>分类</th><th>横幅</th><th>排序</th><th>操作</th></tr></thead>
             <tbody>${rows}</tbody></table>
+            ${renderPagination(data.data.total, data.data.page, data.data.pageSize, 'goTagsPage')}
         </div>`;
 }
 
@@ -351,10 +416,14 @@ async function renderTagForm(id) {
         </div>`;
 }
 
-// --- 合集 ---
-async function renderCollections() {
-    const data = await apiFetch('/api/admin/collections');
-    const rows = (data.data||[]).map(c => `
+// --- 合集列表（分页） ---
+
+function goCollectionsPage(pg) { _colPage = pg; refreshContent(() => renderCollections(false)); }
+
+async function renderCollections(reset = false) {
+    if (reset) _colPage = 1;
+    const data = await apiFetch(`/api/admin/collections?page=${_colPage}&page_size=20`);
+    const rows = (data.data.list || []).map(c => `
         <tr>
             <td>${c.coverImage?`<img src="${c.coverImage}" class="img-thumb">`:'-'}</td>
             <td>${c.name}</td>
@@ -369,7 +438,9 @@ async function renderCollections() {
         </tr>`).join('');
     return `
         <div class="page-header"><h2>合集管理</h2><button class="btn btn-primary" onclick="navigate('collections/new')">+ 添加合集</button></div>
-        <div class="card"><table><thead><tr><th>封面</th><th>名称</th><th>轮播</th><th>产品数</th><th>排序</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        <div class="card"><table><thead><tr><th>封面</th><th>名称</th><th>轮播</th><th>产品数</th><th>排序</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
+        ${renderPagination(data.data.total, data.data.page, data.data.pageSize, 'goCollectionsPage')}
+        </div>`;
 }
 
 async function renderCollectionForm(id) {
@@ -470,9 +541,13 @@ function updateLinkedCount() {
     if (el) el.textContent = count + ' 个';
 }
 
-// --- 文章 ---
-async function renderArticles() {
-    const data = await apiFetch('/api/admin/articles?page=1&page_size=20&status=all');
+// --- 文章列表（分页） ---
+
+function goArticlesPage(pg) { _artPage = pg; refreshContent(() => renderArticles(false)); }
+
+async function renderArticles(reset = false) {
+    if (reset) _artPage = 1;
+    const data = await apiFetch(`/api/admin/articles?page=${_artPage}&page_size=20&status=all`);
     const rows = (data.data.list||[]).map(a => `
         <tr>
             <td>${a.coverImage?`<img src="${a.coverImage}" class="img-thumb">`:'-'}</td>
@@ -487,7 +562,9 @@ async function renderArticles() {
         </tr>`).join('');
     return `
         <div class="page-header"><h2>文章管理</h2><button class="btn btn-primary" onclick="navigate('articles/new')">+ 写文章</button></div>
-        <div class="card"><table><thead><tr><th>封面</th><th>标题</th><th>作者</th><th>状态</th><th>发布时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        <div class="card"><table><thead><tr><th>封面</th><th>标题</th><th>作者</th><th>状态</th><th>发布时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>
+        ${renderPagination(data.data.total, data.data.page, data.data.pageSize, 'goArticlesPage')}
+        </div>`;
 }
 
 async function renderArticleEditor(id) {
@@ -684,14 +761,7 @@ async function delProductImage(productId, imageId) {
 }
 
 // ==================== 产品搜索 ====================
-function searchProducts() {
-    const keyword = document.getElementById('search-input').value.toLowerCase();
-    const rows = document.querySelectorAll('#app-content table tbody tr');
-    rows.forEach(row => {
-        const text = row.textContent.toLowerCase();
-        row.style.display = text.includes(keyword) ? '' : 'none';
-    });
-}
+// searchProducts() 已在产品列表区块定义（含 debounce + 服务端搜索），此处保留作为别名
 
 // ==================== Excel 导入 ====================
 async function importExcel(input) {

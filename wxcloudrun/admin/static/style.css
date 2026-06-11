@@ -180,3 +180,19 @@ tr:hover { background: #f8f9ff; }
 .pagination button.active { background: #667eea; color: #fff; border-color: #667eea; }
 .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
 .pagination span { font-size: 13px; color: #666; }
+
+/* 分页条（新版，与上兼容） */
+.pagination-bar {
+    display: flex; gap: 6px; align-items: center; justify-content: center;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee;
+}
+.pagination-info { font-size: 13px; color: #999; margin-right: 8px; }
+.pagination-btn {
+    padding: 4px 12px; border: 1px solid #ddd; background: #fff;
+    border-radius: 4px; cursor: pointer; font-size: 13px; color: #333;
+    transition: all 0.15s; min-width: 36px; text-align: center;
+}
+.pagination-btn:hover { border-color: #667eea; color: #667eea; }
+.pagination-btn.active { background: #667eea; color: #fff; border-color: #667eea; }
+.pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pagination-ellipsis { padding: 4px 6px; font-size: 13px; color: #999; }

@@ -393,7 +393,10 @@ def admin_delete_product_image(product_id, image_id):
 @require_admin
 def admin_get_tags():
     category = request.args.get('category')
-    return make_succ_response(get_tags(category=category))
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 20, type=int)
+    tags, total = get_tags(category=category, page=page, page_size=page_size)
+    return make_succ_response({'list': tags, 'total': total, 'page': page, 'pageSize': page_size})
 
 
 @app.route('/api/admin/tags/<int:tag_id>', methods=['GET'])
@@ -480,7 +483,10 @@ def admin_upload_tag_image(tag_id):
 @app.route('/api/admin/collections', methods=['GET'])
 @require_admin
 def admin_get_collections():
-    return make_succ_response(get_collections(carousel_only=False))
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 20, type=int)
+    cols, total = get_collections(carousel_only=False, page=page, page_size=page_size)
+    return make_succ_response({'list': cols, 'total': total, 'page': page, 'pageSize': page_size})
 
 
 @app.route('/api/admin/collections/<int:col_id>', methods=['GET'])

@@ -74,15 +74,20 @@ def get_or_create_category(name):
 
 # ==================== 标签 ====================
 
-def get_tags(category=None):
+def get_tags(category=None, page=None, page_size=20):
+    """获取标签列表。page=None 时返回全部（旧行为），传 page 则返回 (list, total) 分页"""
     try:
         q = Tag.query
         if category:
             q = q.filter(Tag.category == category)
+        if page is not None:
+            total = q.count()
+            tags = q.order_by(Tag.sort_order.asc()).offset((page - 1) * page_size).limit(page_size).all()
+            return [t.to_dict() for t in tags], total
         return [t.to_dict() for t in q.order_by(Tag.sort_order.asc()).all()]
     except OperationalError as e:
         logger.error(f"get_tags error: {e}")
-        return []
+        return ([], 0) if page is not None else []
 
 
 def get_or_create_tag(name, category='适用产品', sort_order=0):
@@ -100,15 +105,20 @@ def get_or_create_tag(name, category='适用产品', sort_order=0):
 
 # ==================== 合集 ====================
 
-def get_collections(carousel_only=False):
+def get_collections(carousel_only=False, page=None, page_size=20):
+    """获取合集列表。page=None 时返回全部（旧行为），传 page 则返回 (list, total) 分页"""
     try:
         q = Collection.query
         if carousel_only:
             q = q.filter(Collection.is_carousel == True)
+        if page is not None:
+            total = q.count()
+            cols = q.order_by(Collection.sort_order.asc()).offset((page - 1) * page_size).limit(page_size).all()
+            return [c.to_dict() for c in cols], total
         return [c.to_dict() for c in q.order_by(Collection.sort_order.asc()).all()]
     except OperationalError as e:
         logger.error(f"get_collections error: {e}")
-        return []
+        return ([], 0) if page is not None else []
 
 
 # ==================== 文章 ====================
