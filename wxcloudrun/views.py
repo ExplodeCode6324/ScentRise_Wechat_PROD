@@ -773,29 +773,3 @@ def admin_sync_category_icons():
             updated.append({'category_id': cat.id, 'name': cat.name, 'icon': cat.icon})
     db.session.commit()
     return make_succ_response({'synced': len(updated), 'details': updated})
-
-
-# ==================== 临时：产品表增加 product_english_name 列 ====================
-
-@app.route('/api/admin/migrate-add-english-name', methods=['POST'])
-@require_admin
-def admin_migrate_add_english_name():
-    """一次性迁移：为 products 表添加 product_english_name 列"""
-    from sqlalchemy import text
-    try:
-        with db.engine.connect() as conn:
-            # 检查列是否已存在
-            result = conn.execute(text(
-                "SELECT COUNT(*) FROM information_schema.COLUMNS "
-                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'products' "
-                "AND COLUMN_NAME = 'product_english_name'"
-            )).scalar()
-            if result > 0:
-                return make_succ_response({'migrated': False, 'message': '列已存在，无需迁移'})
-            conn.execute(text(
-                "ALTER TABLE products ADD COLUMN product_english_name VARCHAR(200) "
-                "COMMENT '英文名称（可选）' AFTER product_name"
-            ))
-        return make_succ_response({'migrated': True, 'message': 'product_english_name 列添加成功'})
-    except Exception as e:
-        return make_err_response(f'迁移失败: {str(e)}')
