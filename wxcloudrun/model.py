@@ -52,6 +52,7 @@ class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     product_series = db.Column(db.String(50))
     product_name = db.Column(db.String(200), nullable=False)
+    product_english_name = db.Column(db.String(200))  # 英文名称（可选）
     product_model = db.Column(db.String(100), nullable=False, unique=True)
     product_desc = db.Column(db.Text)
     product_image = db.Column(db.String(500))
@@ -71,6 +72,7 @@ class Product(db.Model):
             'id': self.id,
             'productSeries': self.product_series,
             'productName': self.product_name,
+            'productEnglishName': self.product_english_name or '',
             'productModel': self.product_model,
             'productDesc': self.product_desc,
             'productImage': self.product_image,

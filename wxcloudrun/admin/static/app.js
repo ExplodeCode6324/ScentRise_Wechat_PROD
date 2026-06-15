@@ -264,6 +264,7 @@ async function renderProducts(reset = false) {
             <td>${p.productImage ? `<img src="${p.productImage}" class="img-thumb">` : '-'}</td>
             <td>${p.productModel || '-'}</td>
             <td>${p.productName || '-'}</td>
+            <td>${p.productEnglishName || '-'}</td>
             <td>${p.productSeries || '-'}</td>
             <td>${(p.tags || []).map(t => {
                 const cls = t.category === '产品系列' ? 'badge badge-primary' : 'badge badge-secondary';
@@ -290,7 +291,7 @@ async function renderProducts(reset = false) {
                 style="width:200px;padding:6px 10px;border:1px solid #ddd;border-radius:4px;margin-bottom:12px"
                 oninput="searchProducts()">
             <table><thead><tr>
-                <th>缩略图</th><th>型号</th><th>产品名</th><th>系列</th><th>标签</th><th>状态</th><th>操作</th>
+                <th>缩略图</th><th>型号</th><th>产品名</th><th>英文名</th><th>系列</th><th>标签</th><th>状态</th><th>操作</th>
             </tr></thead><tbody>${rows}</tbody></table>
             ${renderPagination(data.data.total, data.data.page, data.data.pageSize, 'goProductsPage')}
         </div>`;
@@ -298,7 +299,7 @@ async function renderProducts(reset = false) {
 
 async function renderProductForm(id) {
     const isEdit = !!id;
-    let p = { productSeries:'', productModel:'', productName:'', productDesc:'', isActive:true, sortOrder:0, categoryId:'', tags:[], images:[] };
+    let p = { productSeries:'', productModel:'', productName:'', productEnglishName:'', productDesc:'', isActive:true, sortOrder:0, categoryId:'', tags:[], images:[] };
     if (isEdit) {
         const data = await apiFetch('/api/admin/products/' + id);
         p = data.data;
@@ -338,6 +339,7 @@ async function renderProductForm(id) {
                 <div class="form-group"><label>产品系列</label><select name="categoryId">${catOpts}</select></div>
                 <div class="form-group"><label>产品型号 *</label><input name="productModel" value="${p.productModel||''}" ${isEdit?'readonly':''} required></div>
                 <div class="form-group"><label>产品名称 *</label><input name="productName" value="${p.productName||''}" required></div>
+                <div class="form-group"><label>英文名称</label><input name="productEnglishName" value="${p.productEnglishName||''}" placeholder="选填"></div>
                 <div class="form-group"><label>产品描述</label><textarea name="productDesc">${p.productDesc||''}</textarea></div>
                 <div class="form-group">
                   <label>标签 - 产品系列</label>
@@ -628,6 +630,7 @@ async function saveProduct(e, id) {
         categoryId: parseInt(fd.get('categoryId')) || null,
         productModel: fd.get('productModel'),
         productName: fd.get('productName'),
+        productEnglishName: fd.get('productEnglishName') || '',
         productDesc: fd.get('productDesc'),
         isActive: fd.get('isActive') === 'on',
         sortOrder: parseInt(fd.get('sortOrder')) || 0,
@@ -796,6 +799,7 @@ async function importExcel(input) {
                     return {
                         productSeries: r['产品系列'] || r['productSeries'] || '',
                         productName: r['产品名称'] || r['productName'] || '',
+                        productEnglishName: r['英文名称'] || r['productEnglishName'] || '',
                         productModel: r['产品型号'] || r['productModel'] || '',
                         productDesc: r['产品简介'] || r['产品描述'] || r['productDesc'] || '',
                         tags: [...new Set([...legacyTags, ...tags])],  // 合并去重

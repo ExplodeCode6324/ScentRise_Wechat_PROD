@@ -120,6 +120,7 @@ def admin_create_product():
     product = Product(
         product_series=data.get('productSeries'),
         product_name=data.get('productName'),
+        product_english_name=data.get('productEnglishName', ''),
         product_model=data.get('productModel'),
         product_desc=data.get('productDesc'),
         product_image=data.get('productImage'),
@@ -146,6 +147,7 @@ def admin_update_product(product_id):
     # 字段映射：前端 camelCase → 后端 snake_case
     _field_map = {
         'productSeries': 'product_series', 'productName': 'product_name',
+        'productEnglishName': 'product_english_name',
         'productModel': 'product_model', 'productDesc': 'product_desc',
         'productImage': 'product_image', 'categoryId': 'category_id',
         'sortOrder': 'sort_order',
@@ -217,6 +219,7 @@ def admin_import_excel():
             existing = get_product_by_model(row['productModel'])
             if existing:
                 existing.product_name = row.get('productName', existing.product_name)
+                existing.product_english_name = row.get('productEnglishName', existing.product_english_name or '')
                 existing.product_series = series_name
                 existing.product_desc = row.get('productDesc')
                 existing.category_id = cat.id
@@ -226,6 +229,7 @@ def admin_import_excel():
                 product = Product(
                     product_series=series_name,
                     product_name=row.get('productName'),
+                    product_english_name=row.get('productEnglishName', ''),
                     product_model=row['productModel'],
                     product_desc=row.get('productDesc'),
                     category_id=cat.id,
@@ -769,3 +773,30 @@ def admin_sync_category_icons():
             updated.append({'category_id': cat.id, 'name': cat.name, 'icon': cat.icon})
     db.session.commit()
     return make_succ_response({'synced': len(updated), 'details': updated})
+
+
+# ==================== 临时：产品表增加 product_english_name 列 ====================
+
+@app.route('/api/admin/migrate-add-english-name', methods=['POST'])
+@require_admin
+def admin_migrate_add_english_name():
+    """一次性迁移：为 products 表添加 product_english_name 列"""
+    from sqlalchemy import text
+    try:
+        with db.engine.connect() as conn:
+            # 检查列是否已存在
+            result = conn.execute(text(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'products' "
+                "AND COLUMN_NAME = 'product_english_name'"
+            )).scalar()
+            if result > 0:
+                return make_succ_response({'migrated': False, 'message': '列已存在，无需迁移'})
+            conn.execute(text(
+                "ALTER TABLE products ADD COLUMN product_english_name VARCHAR(200) "
+                "COMMENT '英文名称（可选）' AFTER product_name"
+            ))
+            conn.commit()
+        return make_succ_response({'migrated': True, 'message': 'product_english_name 列添加成功'})
+    except Exception as e:
+        return make_err_response(f'迁移失败: {str(e)}')
