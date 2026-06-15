@@ -796,7 +796,6 @@ def admin_migrate_add_english_name():
                 "ALTER TABLE products ADD COLUMN product_english_name VARCHAR(200) "
                 "COMMENT '英文名称（可选）' AFTER product_name"
             ))
-            conn.commit()
         return make_succ_response({'migrated': True, 'message': 'product_english_name 列添加成功'})
     except Exception as e:
         return make_err_response(f'迁移失败: {str(e)}')
