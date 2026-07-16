@@ -93,7 +93,15 @@ def admin_login():
     if not bcrypt.checkpw(data.get('password', '').encode(), admin.passwd.encode()):
         return make_err_response('账号或密码错误')
     admin.last_login = datetime.now()
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.warning('admin_login commit failed, retrying with fresh connection')
+        # 重新获取管理员对象（触发 pool_pre_ping 拿新连接）
+        admin = get_admin_by_username(data.get('username'))
+        admin.last_login = datetime.now()
+        db.session.commit()
     from wxcloudrun.admin.auth import generate_token
     token = generate_token(admin.id, admin.username, admin.role or 'editor')
     return make_succ_response({'token': token, 'admin': admin.to_dict()})
