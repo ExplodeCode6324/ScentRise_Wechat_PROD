@@ -1,2 +1,16 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+instance/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.sqlite
+*.sqlite3

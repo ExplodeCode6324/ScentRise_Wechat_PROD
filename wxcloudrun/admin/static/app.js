@@ -4,8 +4,7 @@
 
 // ==================== 全局状态 ====================
 const STATE = {
-    token: localStorage.getItem('admin_token') || null,
-    admin: JSON.parse(localStorage.getItem('admin_user') || 'null'),
+    admin: null,
     currentPage: ''
 };
 
@@ -14,24 +13,45 @@ const BASE = '';
 
 async function apiFetch(url, options = {}) {
     const headers = { ...options.headers };
-    if (STATE.token) {
-        headers['Authorization'] = 'Bearer ' + STATE.token;
-    }
     // 非 FormData 请求默认 JSON
     if (!(options.body instanceof FormData)) {
         headers['Content-Type'] = 'application/json';
     }
-    const resp = await fetch(BASE + url, { ...options, headers });
-    const data = await resp.json();
+    const resp = await fetch(BASE + url, { ...options, headers, credentials: 'same-origin' });
+    const responseText = await resp.text();
+    let data;
+    try { data = responseText ? JSON.parse(responseText) : {}; }
+    catch (_) { throw new Error(`服务返回了无效响应 (HTTP ${resp.status})`); }
     if (resp.status === 401) {
-        logout();
+        clearSession();
         throw new Error('登录已过期');
     }
     // 后端返回 {code: 0, data: ...} 或 {code: -1, errorMsg: ...}
-    if (data.code !== undefined && data.code !== 0) {
+    if (!resp.ok || (data.code !== undefined && data.code !== 0)) {
         throw new Error(data.errorMsg || '请求失败');
     }
     return data;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    }[char]));
+}
+
+function safeImageUrl(value) {
+    if (!value) return '';
+    try {
+        const url = new URL(String(value), location.origin);
+        if (url.protocol === 'https:' || url.origin === location.origin) return escapeHtml(url.href);
+    } catch (_) {}
+    return '';
+}
+
+function showLoadError(error) {
+    const container = document.getElementById('app-content');
+    container.innerHTML = '<div class="card"><p style="color:red"></p></div>';
+    container.querySelector('p').textContent = '加载失败: ' + (error?.message || '未知错误');
 }
 
 // ==================== Toast ====================
@@ -44,39 +64,29 @@ function showToast(msg, type = 'success') {
     setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 2000);
 }
 
-// ==================== Quill 编辑器 ====================
-function initQuill() {
-    if (!window.Quill || !document.getElementById('editor')) return;
-    // 上一次的 Quill 实例可能已脱离 DOM（页面切换后），重新创建
-    if (window._quill) window._quill = null;
-    window._quill = new Quill('#editor', {
-        theme: 'snow',
-        modules: { toolbar: [['bold','italic','underline'], ['link','image'], ['clean']] }
-    });
-}
-
 // ==================== 登录/登出 ====================
 async function login(username, password) {
     const data = await apiFetch('/api/admin/login', {
         method: 'POST',
         body: JSON.stringify({ username, password })
     });
-    STATE.token = data.data.token;
     STATE.admin = data.data.admin;
-    localStorage.setItem('admin_token', STATE.token);
-    localStorage.setItem('admin_user', JSON.stringify(STATE.admin));
+    document.getElementById('topbar-user').textContent = STATE.admin.username || '';
     showLogin(false);
     showApp(true);
     navigate(''); // Dashboard
 }
 
-function logout() {
-    STATE.token = null;
+function clearSession() {
     STATE.admin = null;
-    localStorage.removeItem('admin_token');
-    localStorage.removeItem('admin_user');
     showApp(false);
     showLogin(true);
+}
+
+async function logout() {
+    try { await apiFetch('/api/admin/logout', { method: 'POST' }); }
+    catch (_) {}
+    clearSession();
 }
 
 function showLogin(show) {
@@ -143,7 +153,7 @@ function renderPagination(total, page, pageSize, goFn) {
 async function refreshContent(renderFn) {
     document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
     try { document.getElementById('app-content').innerHTML = await renderFn(); }
-    catch(e) { document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: '+e.message+'</p></div>'; }
+    catch(e) { showLoadError(e); }
 }
 
 function navigate(hash) {
@@ -160,7 +170,7 @@ function navigate(hash) {
             renderCollectionProducts(colId).then(html => {
                 document.getElementById('app-content').innerHTML = html;
             }).catch(e => {
-                document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: ' + e.message + '</p></div>';
+                showLoadError(e);
             });
             highlightNav('collections');
             return;
@@ -181,9 +191,8 @@ function navigate(hash) {
                 document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
                 dp.render().then(html => {
                     document.getElementById('app-content').innerHTML = html;
-                    if (type === 'articles') setTimeout(initQuill, 100);
                 }).catch(e => {
-                    document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: ' + e.message + '</p></div>';
+                    showLoadError(e);
                 });
                 highlightNav(type);
                 return;
@@ -196,9 +205,8 @@ function navigate(hash) {
     document.getElementById('app-content').innerHTML = '<div class="card"><p>加载中...</p></div>';
     page.render().then(html => {
         document.getElementById('app-content').innerHTML = html;
-        if (hash.startsWith('articles/')) setTimeout(initQuill, 100);
     }).catch(e => {
-        document.getElementById('app-content').innerHTML = '<div class="card"><p style="color:red">加载失败: ' + e.message + '</p></div>';
+        showLoadError(e);
     });
     // 高亮导航
     const navKey = hash.split('/')[0];
@@ -213,7 +221,7 @@ function highlightNav(key) {
 
 window.addEventListener('hashchange', () => {
     const hash = location.hash.slice(1);
-    if (STATE.token) navigate(hash);
+    if (STATE.admin) navigate(hash);
 });
 
 // ==================== 页面渲染（基础 stub） ====================
@@ -229,12 +237,12 @@ async function renderDashboard() {
         <div class="stat-cards">
             <div class="stat-card"><div class="stat-num">${productsData.data.total || 0}</div><div class="stat-label">产品总数</div></div>
             <div class="stat-card"><div class="stat-num">${articlesData.data.total || 0}</div><div class="stat-label">已发布文章</div></div>
-            <div class="stat-card"><div class="stat-num">${(collectionsData.data || []).length}</div><div class="stat-label">合集数</div></div>
-            <div class="stat-card"><div class="stat-num">${(tagsData.data || []).length}</div><div class="stat-label">标签数</div></div>
+            <div class="stat-card"><div class="stat-num">${collectionsData.data.total || 0}</div><div class="stat-label">合集数</div></div>
+            <div class="stat-card"><div class="stat-num">${tagsData.data.total || 0}</div><div class="stat-label">标签数</div></div>
         </div>
         <div class="card">
             <div class="card-title">最近文章</div>
-            ${(articlesData.data.list || []).map(a => `<div style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px">${a.title}</div>`).join('') || '<p style="color:#999">暂无文章</p>'}
+            ${(articlesData.data.list || []).map(a => `<div style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px">${escapeHtml(a.title)}</div>`).join('') || '<p style="color:#999">暂无文章</p>'}
         </div>`;
     return html;
 }
@@ -261,14 +269,14 @@ async function renderProducts(reset = false) {
     const cats = reset ? await apiFetch('/api/categories') : { data: [] };  // 仅首次加载分类（用于后续引用）
     const rows = (data.data.list || []).map(p => `
         <tr>
-            <td>${p.productImage ? `<img src="${p.productImage}" class="img-thumb">` : '-'}</td>
-            <td>${p.productModel || '-'}</td>
-            <td>${p.productName || '-'}</td>
-            <td>${p.productEnglishName || '-'}</td>
-            <td>${p.productSeries || '-'}</td>
+            <td>${safeImageUrl(p.productImage) ? `<img src="${safeImageUrl(p.productImage)}" class="img-thumb" alt="">` : '-'}</td>
+            <td>${escapeHtml(p.productModel || '-')}</td>
+            <td>${escapeHtml(p.productName || '-')}</td>
+            <td>${escapeHtml(p.productEnglishName || '-')}</td>
+            <td>${escapeHtml(p.productSeries || '-')}</td>
             <td>${(p.tags || []).map(t => {
                 const cls = t.category === '产品系列' ? 'badge badge-primary' : 'badge badge-secondary';
-                return `<span class="${cls}">${t.name}</span>`;
+                return `<span class="${cls}">${escapeHtml(t.name)}</span>`;
             }).join(' ')}</td>
             <td><span class="badge ${p.isActive ? 'badge-success' : 'badge-warning'}">${p.isActive ? '上架' : '下架'}</span></td>
             <td>
@@ -287,7 +295,7 @@ async function renderProducts(reset = false) {
             </div>
         </div>
         <div class="card">
-            <input type="text" id="search-input" placeholder="搜索产品名称/型号..." value="${_prodKeyword||''}"
+            <input type="text" id="search-input" placeholder="搜索产品名称/型号..." value="${escapeHtml(_prodKeyword||'')}"
                 style="width:200px;padding:6px 10px;border:1px solid #ddd;border-radius:4px;margin-bottom:12px"
                 oninput="searchProducts()">
             <table><thead><tr>
@@ -309,22 +317,23 @@ async function renderProductForm(id) {
         apiFetch('/api/tags'),
         apiFetch('/api/collections'),
     ]);
-    const catOpts = (cats.data||[]).map(c => `<option value="${c.id}" ${p.categoryId==c.id?'selected':''}>${c.name}</option>`).join('');
+    const catOpts = (cats.data||[]).map(c => `<option value="${Number(c.id)}" ${p.categoryId==c.id?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
     const seriesTags = (tags.data||[]).filter(t => t.category === '产品系列');
     const appTags = (tags.data||[]).filter(t => t.category !== '产品系列');
-    const colOpts = (cols.data||[]).map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    const selectedCollectionIds = new Set(p.collectionIds || []);
+    const colOpts = (cols.data||[]).map(c => `<option value="${Number(c.id)}" ${selectedCollectionIds.has(c.id)?'selected':''}>${escapeHtml(c.name)}</option>`).join('');
     const selectedTagIds = (p.tags||[]).map(t=>t.id);
     const seriesCheckboxes = seriesTags.map(t => {
         const checked = selectedTagIds.includes(t.id) ? 'checked' : '';
-        return `<label class="tag-checkbox"><input type="checkbox" name="tagIds" value="${t.id}" ${checked}> ${t.name}</label>`;
+        return `<label class="tag-checkbox"><input type="checkbox" name="tagIds" value="${Number(t.id)}" ${checked}> ${escapeHtml(t.name)}</label>`;
     }).join('');
     const appCheckboxes = appTags.map(t => {
         const checked = selectedTagIds.includes(t.id) ? 'checked' : '';
-        return `<label class="tag-checkbox"><input type="checkbox" name="tagIds" value="${t.id}" ${checked}> ${t.name}</label>`;
+        return `<label class="tag-checkbox"><input type="checkbox" name="tagIds" value="${Number(t.id)}" ${checked}> ${escapeHtml(t.name)}</label>`;
     }).join('');
     const imagePreviews = (p.images||[]).map(img => `
         <div class="image-item">
-            <img src="${img.imageUrl}" class="${img.isPrimary?'primary':''}">
+            <img src="${safeImageUrl(img.imageUrl)}" class="${img.isPrimary?'primary':''}" alt="">
             ${img.isPrimary ? '<span class="primary-badge">主图</span>' : ''}
             <button class="btn-remove" onclick="delProductImage(${p.id||0},${img.id})">×</button>
         </div>`).join('');
@@ -337,10 +346,10 @@ async function renderProductForm(id) {
         <div class="card">
             <form id="product-form" onsubmit="saveProduct(event,${isEdit?id:0})">
                 <div class="form-group"><label>产品系列</label><select name="categoryId">${catOpts}</select></div>
-                <div class="form-group"><label>产品型号 *</label><input name="productModel" value="${p.productModel||''}" ${isEdit?'readonly':''} required></div>
-                <div class="form-group"><label>产品名称 *</label><input name="productName" value="${p.productName||''}" required></div>
-                <div class="form-group"><label>英文名称</label><input name="productEnglishName" value="${p.productEnglishName||''}" placeholder="选填"></div>
-                <div class="form-group"><label>产品描述</label><textarea name="productDesc">${p.productDesc||''}</textarea></div>
+                <div class="form-group"><label>产品型号 *</label><input name="productModel" value="${escapeHtml(p.productModel||'')}" ${isEdit?'readonly':''} required></div>
+                <div class="form-group"><label>产品名称 *</label><input name="productName" value="${escapeHtml(p.productName||'')}" required></div>
+                <div class="form-group"><label>英文名称</label><input name="productEnglishName" value="${escapeHtml(p.productEnglishName||'')}" placeholder="选填"></div>
+                <div class="form-group"><label>产品描述</label><textarea name="productDesc">${escapeHtml(p.productDesc||'')}</textarea></div>
                 <div class="form-group">
                   <label>标签 - 产品系列</label>
                   <div class="checkbox-group">${seriesCheckboxes || '<span style="color:#999;font-size:13px">暂无系列标签</span>'}</div>
@@ -378,10 +387,10 @@ async function renderTags(reset = false) {
     const data = await apiFetch(`/api/admin/tags?page=${_tagPage}&page_size=20`);
     const rows = (data.data.list || []).map(t => `
         <tr>
-            <td>${t.icon ? `<img src="${t.icon}" class="img-thumb">` : '-'}</td>
-            <td>${t.name}</td>
-            <td>${t.category||'-'}</td>
-            <td>${t.bannerImage ? `<img src="${t.bannerImage}" style="width:80px;height:30px;object-fit:cover;border-radius:2px">` : '-'}</td>
+            <td>${safeImageUrl(t.icon) ? `<img src="${safeImageUrl(t.icon)}" class="img-thumb" alt="">` : '-'}</td>
+            <td>${escapeHtml(t.name)}</td>
+            <td>${escapeHtml(t.category||'-')}</td>
+            <td>${safeImageUrl(t.bannerImage) ? `<img src="${safeImageUrl(t.bannerImage)}" style="width:80px;height:30px;object-fit:cover;border-radius:2px" alt="">` : '-'}</td>
             <td>${t.sortOrder||0}</td>
             <td>
                 <button class="btn btn-sm btn-outline" onclick="navigate('tags/${t.id}')">编辑</button>
@@ -405,7 +414,7 @@ async function renderTagForm(id) {
         <div class="page-header"><h2>${isEdit?'编辑':'添加'}标签</h2><button class="btn btn-outline" onclick="navigate('tags')">← 返回</button></div>
         <div class="card">
             <form onsubmit="saveTag(event,${id||0})">
-                <div class="form-group"><label>名称 *</label><input name="name" value="${t.name||''}" required></div>
+                <div class="form-group"><label>名称 *</label><input name="name" value="${escapeHtml(t.name||'')}" required></div>
                 <div class="form-group"><label>分类</label><select name="category">
                     ${['产品系列','适用产品'].map(c=>`<option ${t.category==c?'selected':''}>${c}</option>`).join('')}
                 </select></div>
@@ -414,9 +423,9 @@ async function renderTagForm(id) {
             </form>
             ${isEdit ? `
             <div style="margin-top:16px">
-                <div style="margin-bottom:8px"><strong>图标</strong> ${t.icon?`<img src="${t.icon}" style="width:30px;height:30px;vertical-align:middle;margin-left:8px">`:''}</div>
+                <div style="margin-bottom:8px"><strong>图标</strong> ${safeImageUrl(t.icon)?`<img src="${safeImageUrl(t.icon)}" style="width:30px;height:30px;vertical-align:middle;margin-left:8px" alt="">`:''}</div>
                 <input type="file" id="tag-icon-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadTagImage(${id},'icon')">上传图标</button>
-                <div style="margin-top:12px"><strong>横幅</strong> ${t.bannerImage?`<img src="${t.bannerImage}" style="width:120px;height:40px;vertical-align:middle;margin-left:8px;object-fit:cover">`:''}</div>
+                <div style="margin-top:12px"><strong>横幅</strong> ${safeImageUrl(t.bannerImage)?`<img src="${safeImageUrl(t.bannerImage)}" style="width:120px;height:40px;vertical-align:middle;margin-left:8px;object-fit:cover" alt="">`:''}</div>
                 <input type="file" id="tag-banner-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadTagImage(${id},'banner')">上传横幅</button>
             </div>` : '<p style="color:#999;margin-top:8px">保存后可上传图标/横幅</p>'}
         </div>`;
@@ -431,8 +440,8 @@ async function renderCollections(reset = false) {
     const data = await apiFetch(`/api/admin/collections?page=${_colPage}&page_size=20`);
     const rows = (data.data.list || []).map(c => `
         <tr>
-            <td>${c.coverImage?`<img src="${c.coverImage}" class="img-thumb">`:'-'}</td>
-            <td>${c.name}</td>
+            <td>${safeImageUrl(c.coverImage)?`<img src="${safeImageUrl(c.coverImage)}" class="img-thumb" alt="">`:'-'}</td>
+            <td>${escapeHtml(c.name)}</td>
             <td><span class="badge ${c.isCarousel?'badge-success':'badge-secondary'}">${c.isCarousel?'✓':'✗'}</span></td>
             <td>${(c.products||[]).length}</td>
             <td>${c.sortOrder||0}</td>
@@ -457,15 +466,15 @@ async function renderCollectionForm(id) {
         <div class="page-header"><h2>${isEdit?'编辑':'添加'}合集</h2><button class="btn btn-outline" onclick="navigate('collections')">← 返回</button></div>
         <div class="card">
             <form onsubmit="saveCollection(event,${id||0})">
-                <div class="form-group"><label>名称 *</label><input name="name" value="${c.name||''}" required></div>
-                <div class="form-group"><label>描述</label><textarea name="description">${c.description||''}</textarea></div>
+                <div class="form-group"><label>名称 *</label><input name="name" value="${escapeHtml(c.name||'')}" required></div>
+                <div class="form-group"><label>描述</label><textarea name="description">${escapeHtml(c.description||'')}</textarea></div>
                 <div class="form-group"><label><input type="checkbox" name="isCarousel" ${c.isCarousel?'checked':''}> 首页轮播</label></div>
                 <div class="form-group"><label>轮播排序</label><input name="carouselSort" type="number" value="${c.carouselSort||0}"></div>
                 <div class="form-group"><label>排序</label><input name="sortOrder" type="number" value="${c.sortOrder||0}"></div>
                 <button type="submit" class="btn btn-primary">保存</button>
             </form>
             ${isEdit ? `
-            <div style="margin-top:12px"><strong>封面</strong> ${c.coverImage?`<img src="${c.coverImage}" class="img-preview">`:''}
+            <div style="margin-top:12px"><strong>封面</strong> ${safeImageUrl(c.coverImage)?`<img src="${safeImageUrl(c.coverImage)}" class="img-preview" alt="">`:''}
             <div><input type="file" id="col-cover-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadCollectionCover(${id})">上传封面</button></div></div>` : ''}
         </div>`;
 }
@@ -482,21 +491,21 @@ async function renderCollectionProducts(colId) {
         const checked = linkedIds.has(p.id) ? 'checked' : '';
         return `<label class="cp-item ${checked?'selected':''}">
             <input type="checkbox" name="cp_product" value="${p.id}" ${checked} onchange="this.parentElement.classList.toggle('selected',this.checked)">
-            <span class="cp-info"><strong>${p.productName||'-'}</strong> <small>${p.productModel||''}</small></span>
-            <span class="cp-series">${p.productSeries||''}</span>
+            <span class="cp-info"><strong>${escapeHtml(p.productName||'-')}</strong> <small>${escapeHtml(p.productModel||'')}</small></span>
+            <span class="cp-series">${escapeHtml(p.productSeries||'')}</span>
         </label>`;
     }).join('');
 
     const rightRows = linked.map((p, i) => `
         <div class="cp-linked-item" data-pid="${p.id}">
             <span class="cp-order">${i+1}</span>
-            <span class="cp-info"><strong>${p.productName||'-'}</strong> <small>${p.productModel||''}</small></span>
+            <span class="cp-info"><strong>${escapeHtml(p.productName||'-')}</strong> <small>${escapeHtml(p.productModel||'')}</small></span>
             <button class="btn btn-sm" onclick="removeLinkedProduct(this, ${p.id})" title="移除">×</button>
         </div>`).join('') || '<p style="color:#999;padding:12px">暂未关联产品</p>';
 
     return `
         <div class="page-header">
-            <h2>合集产品管理：${col.name}</h2>
+            <h2>合集产品管理：${escapeHtml(col.name)}</h2>
             <button class="btn btn-outline" onclick="navigate('collections')">← 返回合集列表</button>
         </div>
         <div class="cp-panel">
@@ -556,11 +565,11 @@ async function renderArticles(reset = false) {
     const data = await apiFetch(`/api/admin/articles?page=${_artPage}&page_size=20&status=all`);
     const rows = (data.data.list||[]).map(a => `
         <tr>
-            <td>${a.coverImage?`<img src="${a.coverImage}" class="img-thumb">`:'-'}</td>
-            <td><a href="javascript:navigate('articles/${a.id}')">${a.title}</a></td>
-            <td>${a.author||'-'}</td>
+            <td>${safeImageUrl(a.coverImage)?`<img src="${safeImageUrl(a.coverImage)}" class="img-thumb" alt="">`:'-'}</td>
+            <td><a href="#articles/${Number(a.id)}">${escapeHtml(a.title)}</a></td>
+            <td>${escapeHtml(a.author||'-')}</td>
             <td><span class="badge ${a.isPublished?'badge-success':'badge-warning'}">${a.isPublished?'已发布':'草稿'}</span></td>
-            <td>${a.publishedAt||'-'}</td>
+            <td>${escapeHtml(a.publishedAt||'-')}</td>
             <td>
                 <button class="btn btn-sm btn-outline" onclick="navigate('articles/${a.id}')">编辑</button>
                 <button class="btn btn-sm btn-danger" onclick="delArticle(${a.id})">删除</button>
@@ -581,19 +590,18 @@ async function renderArticleEditor(id) {
         <div class="page-header"><h2>${isEdit?'编辑':'写'}文章</h2><button class="btn btn-outline" onclick="navigate('articles')">← 返回</button></div>
         <div class="card">
             <form onsubmit="saveArticle(event,${id||0})">
-                <div class="form-group"><label>标题 *</label><input name="title" value="${a.title||''}" required></div>
-                <div class="form-group"><label>作者</label><input name="author" value="${a.author||''}"></div>
-                <div class="form-group"><label>正文 *</label>
-                    <div id="editor-container" class="editor-container"><div id="editor">${a.content||''}</div></div>
+                <div class="form-group"><label>标题 *</label><input name="title" value="${escapeHtml(a.title||'')}" required></div>
+                <div class="form-group"><label>作者</label><input name="author" value="${escapeHtml(a.author||'')}"></div>
+                <div class="form-group"><label>正文 *（支持安全的基础 HTML）</label>
+                    <textarea name="content" rows="16" required>${escapeHtml(a.content||'')}</textarea>
                 </div>
-                <input type="hidden" name="content" id="content-hidden">
                 <div class="form-group"><label>排序</label><input name="sortOrder" type="number" value="${a.sortOrder||0}"></div>
                 <div class="form-group"><label><input type="radio" name="isPublished" value="1" ${a.isPublished?'checked':''}> 发布</label>
                 <label style="margin-left:16px"><input type="radio" name="isPublished" value="0" ${!a.isPublished?'checked':''}> 草稿</label></div>
                 <button type="submit" class="btn btn-primary">保存</button>
             </form>
             ${isEdit ? `
-            <div style="margin-top:12px"><strong>封面</strong> ${a.coverImage?`<img src="${a.coverImage}" class="img-preview">`:''}
+            <div style="margin-top:12px"><strong>封面</strong> ${safeImageUrl(a.coverImage)?`<img src="${safeImageUrl(a.coverImage)}" class="img-preview" alt="">`:''}
             <div><input type="file" id="article-cover-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadArticleCover(${id})">上传封面</button></div></div>` : ''}
         </div>`;
 }
@@ -606,18 +614,18 @@ async function renderCompany() {
         <div class="page-header"><h2>公司信息</h2></div>
         <div class="card">
             <form onsubmit="saveCompany(event)">
-                <div class="form-group"><label>公司名称</label><input name="name" value="${c.name||''}"></div>
-                <div class="form-group"><label>公司简介</label><textarea name="intro">${c.intro||''}</textarea></div>
-                <div class="form-group"><label>联系电话</label><input name="phone" value="${c.phone||''}"></div>
-                <div class="form-group"><label>微信号</label><input name="wechatId" value="${c.wechatId||''}"></div>
-                <div class="form-group"><label>邮箱</label><input name="email" type="email" value="${c.email||''}"></div>
-                <div class="form-group"><label>地址</label><input name="address" value="${c.address||''}"></div>
-                <div class="form-group"><label>营业时间</label><input name="businessHours" value="${c.businessHours||''}"></div>
+                <div class="form-group"><label>公司名称</label><input name="name" value="${escapeHtml(c.name||'')}"></div>
+                <div class="form-group"><label>公司简介</label><textarea name="intro">${escapeHtml(c.intro||'')}</textarea></div>
+                <div class="form-group"><label>联系电话</label><input name="phone" value="${escapeHtml(c.phone||'')}"></div>
+                <div class="form-group"><label>微信号</label><input name="wechatId" value="${escapeHtml(c.wechatId||'')}"></div>
+                <div class="form-group"><label>邮箱</label><input name="email" type="email" value="${escapeHtml(c.email||'')}"></div>
+                <div class="form-group"><label>地址</label><input name="address" value="${escapeHtml(c.address||'')}"></div>
+                <div class="form-group"><label>营业时间</label><input name="businessHours" value="${escapeHtml(c.businessHours||'')}"></div>
                 <button type="submit" class="btn btn-primary">保存</button>
             </form>
-            <div style="margin-top:12px"><strong>Logo</strong> ${c.logo?`<img src="${c.logo}" class="img-preview">`:''}
+            <div style="margin-top:12px"><strong>Logo</strong> ${safeImageUrl(c.logo)?`<img src="${safeImageUrl(c.logo)}" class="img-preview" alt="">`:''}
             <div><input type="file" id="company-logo-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadCompanyLogo()">上传 Logo</button></div></div>
-            <div style="margin-top:12px"><strong>微信二维码</strong> ${c.wechatQr?`<img src="${c.wechatQr}" class="img-preview">`:''}
+            <div style="margin-top:12px"><strong>微信二维码</strong> ${safeImageUrl(c.wechatQr)?`<img src="${safeImageUrl(c.wechatQr)}" class="img-preview" alt="">`:''}
             <div><input type="file" id="company-qr-file" accept="image/*"> <button class="btn btn-sm btn-primary" onclick="uploadCompanyQR()">上传二维码</button></div></div>
         </div>`;
 }
@@ -698,7 +706,7 @@ async function uploadCollectionCover(id) {
 async function saveArticle(e, id) {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const content = window._quill ? window._quill.root.innerHTML : '';
+    const content = fd.get('content') || '';
     const body = { title: fd.get('title'), author: fd.get('author'), content, isPublished: fd.get('isPublished')==='1', sortOrder: parseInt(fd.get('sortOrder'))||0 };
     const method = id ? 'PUT' : 'POST';
     const url = id ? '/api/admin/articles/'+id : '/api/admin/articles';
@@ -773,46 +781,121 @@ async function delProductImage(productId, imageId) {
 // ==================== Excel 导入 ====================
 async function importExcel(input) {
     if (!input.files[0]) return;
+    if (input.files[0].size > 10 * 1024 * 1024) {
+        input.value = '';
+        return showToast('Excel 文件不能超过 10MB', 'error');
+    }
     try {
-        // 使用 SheetJS 解析 Excel（需在 HTML 中引入 CDN）
         const reader = new FileReader();
         reader.onload = async function(e) {
             try {
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, {type: 'array'});
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
-                const rows = XLSX.utils.sheet_to_json(sheet);
-                // Excel 列名映射（兼容「产品简介」和「产品描述」两种表头）
-                // 标签列：E-K列独立检测 √ → 自动加入 tags 数组
+                const headerRow = (XLSX.utils.sheet_to_json(sheet, { header: 1, range: 0 })[0] || [])
+                    .map(name => String(name).trim());
+                // 第一行只作为字段名，数据固定从第二行开始读取。
+                const rows = XLSX.utils.sheet_to_json(sheet, {
+                    header: headerRow, range: 1, defval: '', blankrows: false
+                });
                 const TAG_COLUMNS = ['烘培', '糖果', '饮料', '炒货', '乳品', '膨化', '电子烟'];
-                const mapped = rows.map(r => {
+                const tagsProvided = headerRow.some(name => name === '标签' || name === 'tags' || TAG_COLUMNS.includes(name));
+                const marked = value => value === true || value === 1 || ['√', '✓', 'v', 'V', '1', '是', 'true', 'TRUE'].includes(String(value).trim());
+                const mapped = rows.map((r, index) => {
                     const tags = [];
-                    // 检测 √ 标记的标签列
                     TAG_COLUMNS.forEach(col => {
-                        const val = r[col];
-                        if (val === '√' || val === 'v' || val === 'V' || val === 1 || val === '1' || val === true) {
-                            tags.push(col);
-                        }
-                        // 也支持逗号分隔的「标签」列（兼容旧格式）
+                        if (marked(r[col])) tags.push(col);
                     });
                     const legacyTags = (r['标签'] || r['tags'] || '').toString().split(/[,，;；]/).map(t => t.trim()).filter(Boolean);
                     return {
+                        excelRow: index + 2,
                         productSeries: r['产品系列'] || r['productSeries'] || '',
-                        productName: r['产品名称'] || r['productName'] || '',
+                        productName: r['产品名称'] || r['名称'] || r['productName'] || '',
                         productEnglishName: r['英文名称'] || r['productEnglishName'] || '',
-                        productModel: r['产品型号'] || r['productModel'] || '',
+                        productModel: r['产品型号'] || r['型号'] || r['productModel'] || '',
                         productDesc: r['产品简介'] || r['产品描述'] || r['productDesc'] || '',
-                        tags: [...new Set([...legacyTags, ...tags])],  // 合并去重
+                        tags: [...new Set([...legacyTags, ...tags])],
+                        tagsProvided,
                     };
                 });
-                const result = await apiFetch('/api/admin/import', { method: 'POST', body: JSON.stringify({ rows: mapped }) });
+                const options = {
+                    emptyTagAction: 'preserve',
+                    overwriteEmpty: false,
+                    duplicateModelAction: 'ask',
+                    existingModelAction: 'ask',
+                };
+                const issueText = issues => (issues || []).slice(0, 20).map(item => `- ${item.message}`).join('\n');
+                let preflight;
+                for (let attempt = 0; attempt < 4; attempt += 1) {
+                    const preflightResponse = await apiFetch('/api/admin/import/preflight', {
+                        method: 'POST', body: JSON.stringify({ rows: mapped, options })
+                    });
+                    preflight = preflightResponse.data;
+                    const fileDuplicates = (preflight.decisions || [])
+                        .find(item => item.code === 'file_duplicate_models');
+                    if (fileDuplicates) {
+                        const overwrite = confirm(
+                            `文件内发现${fileDuplicates.duplicateModelCount || 0}个重复型号。\n\n` +
+                            '确定：采用同一型号最后出现的一行覆盖前面的行。\n' +
+                            '取消：跳过这些重复型号的所有行。\n\n' +
+                            '无论选择哪项，其他合格行都会继续导入。'
+                        );
+                        options.duplicateModelAction = overwrite ? 'last_wins' : 'skip';
+                        continue;
+                    }
+                    const existingModels = (preflight.decisions || [])
+                        .find(item => item.code === 'existing_models');
+                    if (existingModels) {
+                        const overwrite = confirm(
+                            `数据库中已有${existingModels.existingModelCount || 0}个相同产品型号。\n\n` +
+                            '确定：以表格的非空内容更新现有产品。\n' +
+                            '取消：跳过已存在型号。\n\n' +
+                            '无论选择哪项，其他合格行都会继续导入。'
+                        );
+                        options.existingModelAction = overwrite ? 'update' : 'skip';
+                        continue;
+                    }
+                    break;
+                }
+                if (!preflight) throw new Error('导入预检没有返回结果');
+                const summary = preflight.summary || {};
+                if (!preflight.valid) {
+                    alert(`没有可导入的合格行，未写入任何数据。\n\n${issueText(preflight.errors)}`);
+                    return;
+                }
+                let confirmation = `预检完成，共${summary.total || 0}行：` +
+                    `\n可导入 ${summary.validRows || 0}` +
+                    `\n新建 ${summary.wouldCreate || 0}` +
+                    `\n更新 ${summary.wouldUpdate || 0}` +
+                    `\n无变化 ${summary.noChange || 0}` +
+                    `\n校验失败并跳过 ${summary.invalidRows || 0}` +
+                    `\n按重复规则跳过 ${summary.skippedRows || 0}`;
+                if ((preflight.errors || []).length) {
+                    confirmation += `\n\n失败行（其余合格行仍会导入）：\n${issueText(preflight.errors)}`;
+                }
+                if ((preflight.warnings || []).length) {
+                    confirmation += `\n\n警告：\n${issueText(preflight.warnings)}`;
+                }
+                confirmation += '\n\n空白英文名/描述不会覆盖已有值；空白标签不会清空已有标签。确认提交？';
+                if (!confirm(confirmation)) return;
+                const result = await apiFetch('/api/admin/import', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        rows: mapped, options, planHash: preflight.planHash,
+                        confirmWarnings: (preflight.warnings || []).length > 0,
+                    })
+                });
                 const d = result.data;
-                showToast('导入完成: 新建' + (d.created||0) + '条, 更新' + (d.updated||0) + '条');
-                if (d.errors && d.errors.length > 0) {
-                    alert('部分行导入失败:\n' + d.errors.join('\n'));
+                const resultText = '导入完成: 新建' + (d.created||0) + '条, 更新' +
+                    (d.updated||0) + '条, 无变化' + (d.unchanged||0) + '条, 校验失败跳过' +
+                    (d.invalidRows||0) + '行, 重复规则跳过' + (d.skippedRows||0) + '行';
+                showToast(resultText);
+                if ((d.errors || []).length || (d.skipped || []).length) {
+                    alert(`${resultText}\n\n失败/跳过明细：\n${issueText([...(d.errors || []), ...(d.skipped || [])])}`);
                 }
                 navigate('products');
             } catch(err) { showToast('导入失败: ' + err.message, 'error'); }
+            finally { input.value = ''; }
         };
         reader.readAsArrayBuffer(input.files[0]);
     } catch(e) { showToast(e.message, 'error'); }
@@ -839,30 +922,17 @@ document.querySelectorAll('.sidebar-nav a').forEach(a => {
     a.addEventListener('click', e => { e.preventDefault(); navigate(a.dataset.nav); });
 });
 
-// 启动：先验证 token 有效性再决定显示哪个页面
+// 启动：HttpOnly Cookie 不可由脚本读取，直接向服务端验证会话。
 (async function init() {
-    if (STATE.token) {
-        // 显示加载状态（防止闪烁）
-        showLogin(false);
-        showApp(false);
-        try {
-            const verifyData = await apiFetch('/api/admin/verify');
-            // token 有效，显示管理页面
-            STATE.admin = verifyData.data || verifyData;
-            localStorage.setItem('admin_user', JSON.stringify(STATE.admin));
-            document.getElementById('topbar-user').textContent = STATE.admin.username || '';
-            showApp(true);
-            navigate(location.hash.slice(1) || '');
-        } catch (e) {
-            // token 无效或已过期，清除并显示登录页
-            console.warn('Token 验证失败:', e.message);
-            STATE.token = null;
-            STATE.admin = null;
-            localStorage.removeItem('admin_token');
-            localStorage.removeItem('admin_user');
-            showLogin(true);
-        }
-    } else {
-        showLogin(true);
+    showLogin(false);
+    showApp(false);
+    try {
+        const verifyData = await apiFetch('/api/admin/verify');
+        STATE.admin = verifyData.data;
+        document.getElementById('topbar-user').textContent = STATE.admin.username || '';
+        showApp(true);
+        navigate(location.hash.slice(1) || '');
+    } catch (_) {
+        clearSession();
     }
 })();
