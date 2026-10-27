@@ -1,0 +1,18 @@
+name: Governance CI
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: ['codex/governance-audit-20261028']
+permissions:
+  contents: read
+jobs:
+  governance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Verify workflow instructions and issue-linked plan
+        run: python3 tools/check-governance.py
