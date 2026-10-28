@@ -26,7 +26,7 @@ def main():
         AUTO_CREATE_DATABASE="0",
         AUTO_CREATE_TABLES="0",
     )
-    server = sa.create_engine(url.set(database=None), isolation_level="AUTOCOMMIT")
+    server = sa.create_engine(url.set(database="mysql"), isolation_level="AUTOCOMMIT")
     with server.connect() as connection:
         # The database identifier is checked against the fixed allowlist above.
         connection.execute(sa.text(f"CREATE DATABASE `{url.database}` CHARACTER SET utf8mb4"))
