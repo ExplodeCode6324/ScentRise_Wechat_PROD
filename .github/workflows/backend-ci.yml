@@ -1,0 +1,88 @@
+name: Backend Baseline CI
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: ['codex/issue-4-release-baseline-20261028']
+permissions:
+  contents: read
+concurrency:
+  group: backend-baseline-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  regression:
+    name: Regression and release record
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Preserve the business and governance history
+        run: |
+          git merge-base --is-ancestor 6609c38561661bf8607c4461c346229e4007022e HEAD
+          git merge-base --is-ancestor e6c6727dbac5b92458e912330f58d993ac6b41e5 HEAD
+          git diff --exit-code 6609c38561661bf8607c4461c346229e4007022e -- Dockerfile container.config.json config.py requirements.txt requirements-dev.txt migrations wxcloudrun tests schema.sql init_db.py seed_admin.py run.py
+      - run: python tools/check-governance.py
+      - run: python tools/check_release_record.py docs/deployment/release-record.template.json
+      - name: Reject an incomplete release
+        shell: bash
+        run: |
+          if python tools/check_release_record.py docs/deployment/release-record.template.json --require-ready; then
+            echo "Incomplete template was incorrectly admitted"
+            exit 1
+          fi
+      - run: python -m unittest discover -s tools/tests -v
+      - run: python -m pytest -q
+      - run: python -m ruff check wxcloudrun tests config.py init_db.py seed_admin.py run.py tools/check_release_record.py tools/ci_mysql_baseline.py tools/tests
+      - run: python -m ruff format --check wxcloudrun tests config.py init_db.py seed_admin.py run.py tools/check_release_record.py tools/ci_mysql_baseline.py tools/tests
+  container-mysql:
+    name: Container and synthetic MySQL compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI_SANDBOX: issue4
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: bash tools/ci_container_smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-container-mysql-evidence
+          path: ci-evidence/
+          if-no-files-found: error
+  dependency-audit:
+    name: Dependency security scan (release gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Audit existing pinned runtime dependencies
+        run: python -m pip_audit -r requirements.txt --format json --output dependency-audit.json --progress-spinner off
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-dependency-audit
+          path: dependency-audit.json
+          if-no-files-found: error

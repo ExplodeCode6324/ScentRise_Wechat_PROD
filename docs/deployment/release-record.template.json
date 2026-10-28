@@ -1,0 +1,79 @@
+{
+  "record_id": "unknown",
+  "status": "draft",
+  "recorded_at": "unknown",
+  "operator": "unknown",
+  "issue_url": "https://github.com/ExplodeCode6324/ScentRise_Wechat_PROD/issues/4",
+  "pr_url": "unknown",
+  "authorization_refs": {
+    "implementation": "unknown",
+    "merge": "unknown",
+    "production": "unknown"
+  },
+  "source": {
+    "repository": "https://github.com/ExplodeCode6324/ScentRise_Wechat_PROD",
+    "branch": "unknown",
+    "commit": "unknown",
+    "business_commit": "6609c38561661bf8607c4461c346229e4007022e",
+    "governance_commit": "e6c6727dbac5b92458e912330f58d993ac6b41e5",
+    "ci_runs": [
+      {
+        "url": "unknown",
+        "conclusion": "unknown"
+      }
+    ]
+  },
+  "build": {
+    "id": "unknown",
+    "context": ".",
+    "dockerfile": "Dockerfile",
+    "base_image": "unknown",
+    "image": "unknown"
+  },
+  "target": {
+    "environment_ref": "unknown",
+    "service_ref": "unknown",
+    "tracking_branch": "unknown",
+    "version": "unknown",
+    "traffic_percent": 0,
+    "port": 8080,
+    "startup": "gunicorn wxcloudrun:app",
+    "probes": {
+      "liveness": "/healthz",
+      "readiness": "/readyz"
+    }
+  },
+  "config": {
+    "revision": "unknown",
+    "backup_ref": "unknown",
+    "environment_keys": [
+      "JWT_SECRET",
+      "DATABASE_URL",
+      "PORT"
+    ],
+    "secret_version_refs": [
+      "unknown"
+    ]
+  },
+  "database": {
+    "before": "unknown",
+    "after": "unknown",
+    "schema_evidence_ref": "unknown",
+    "backup_ref": "unknown",
+    "restore_drill_ref": "unknown",
+    "candidate_compatibility": "unknown",
+    "rollback_compatibility": "unknown"
+  },
+  "rollback": {
+    "image": "unknown",
+    "commit": "unknown",
+    "config_revision": "unknown",
+    "trigger": "unknown",
+    "procedure_ref": "unknown",
+    "validation_ref": "unknown",
+    "owner": "unknown"
+  },
+  "blockers": [
+    "Production source SHA, configuration, schema and rollback evidence are not verified."
+  ]
+}

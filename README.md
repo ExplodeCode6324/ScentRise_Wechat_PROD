@@ -79,6 +79,10 @@ is the globally unique business key used to match imports.
 
 ## Production rollout
 
+Release baseline, commit/image/configuration/migration evidence, CI gates and rollback:
+[release baseline and rollback](docs/deployment/release-baseline.md).
+The baseline candidate is pending review; this change does not deploy or switch production.
+
 1. Back up MySQL and inspect duplicate category names.
 2. Configure all required secret variables and set the service container port
    to `8080`.
