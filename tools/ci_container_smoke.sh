@@ -59,7 +59,7 @@ for path in ("/healthz", "/readyz", "/admin/", "/admin/static/app.js",
     print("PASS", path)
 PY
   [[ "$(docker exec "issue4-$role" id -u)" == 10001 ]]
-  docker top "issue4-$role" -eo args | grep -q gunicorn
+  docker top "issue4-$role" -eo pid,args | grep -q gunicorn
   echo "PASS $role: Gunicorn + UID 10001 + 8080 + migrated synthetic MySQL" \
     | tee "ci-evidence/$role.txt"
   docker logs "issue4-$role" > "ci-evidence/$role.log" 2>&1
