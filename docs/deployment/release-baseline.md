@@ -1,7 +1,8 @@
 # 后端发布基线、记录及回退入口
 
-Issue：https://github.com/ExplodeCode6324/ScentRise_Wechat_PROD/issues/4  
-状态：候选实现待审；master、生产发布来源、分支保护及线上配置均未切换。  
+Issue：https://github.com/ExplodeCode6324/ScentRise_Wechat_PROD/issues/4
+
+状态：候选实现待审；master、生产发布来源、分支保护及线上配置均未切换。
 Master 于 2026-10-28 批准实施计划并要求验证、CI 后提交 PR；未授权合并或生产发布。
 
 ## 代码基线与审阅方式

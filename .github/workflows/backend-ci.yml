@@ -28,6 +28,9 @@ jobs:
         run: |
           git merge-base --is-ancestor 6609c38561661bf8607c4461c346229e4007022e HEAD
           git merge-base --is-ancestor e6c6727dbac5b92458e912330f58d993ac6b41e5 HEAD
+      - name: Keep Issue 4 runtime sources unchanged
+        if: github.head_ref == 'codex/issue-4-release-baseline-20261028' || github.ref_name == 'codex/issue-4-release-baseline-20261028'
+        run: |
           git diff --exit-code 6609c38561661bf8607c4461c346229e4007022e -- Dockerfile container.config.json config.py requirements.txt requirements-dev.txt migrations wxcloudrun tests schema.sql init_db.py seed_admin.py run.py
       - run: python tools/check-governance.py
       - run: python tools/check_release_record.py docs/deployment/release-record.template.json

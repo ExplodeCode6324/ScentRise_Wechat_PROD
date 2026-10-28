@@ -6,6 +6,7 @@ import os
 import sys
 
 import sqlalchemy as sa
+from alembic import command
 
 ALLOWED_DATABASES = {"scentrise_ci_empty", "scentrise_ci_legacy", "scentrise_ci_duplicates"}
 
@@ -32,8 +33,6 @@ def main():
         connection.execute(sa.text(f"CREATE DATABASE `{url.database}` CHARACTER SET utf8mb4"))
     server.dispose()
 
-    from flask_migrate import upgrade
-
     from wxcloudrun import app, db
 
     duplicate_case = url.database == "scentrise_ci_duplicates"
@@ -56,7 +55,8 @@ def main():
                         sa.text("INSERT INTO categories (name) VALUES ('ci-series')")
                     )
         try:
-            upgrade()
+            migration_config = app.extensions["migrate"].migrate.get_config()
+            command.upgrade(migration_config, "head")
         except RuntimeError as error:
             if not duplicate_case or "categories存在重名" not in str(error):
                 raise

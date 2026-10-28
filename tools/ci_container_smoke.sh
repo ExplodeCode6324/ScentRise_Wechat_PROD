@@ -7,8 +7,11 @@ set -euo pipefail
 }
 mkdir -p ci-evidence
 cleanup() {
-  docker logs issue4-candidate > ci-evidence/candidate.log 2>&1 || true
-  docker logs issue4-rollback > ci-evidence/rollback.log 2>&1 || true
+  for role in candidate rollback mysql; do
+    if docker inspect "issue4-$role" >/dev/null 2>&1; then
+      docker logs "issue4-$role" > "ci-evidence/$role.log" 2>&1 || true
+    fi
+  done
   docker rm -f issue4-candidate issue4-rollback issue4-mysql >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -23,7 +26,7 @@ done
 docker exec issue4-mysql mysqladmin ping -h127.0.0.1 -pci-only-mysql-password --silent
 for scenario in empty legacy duplicates; do
   DATABASE_URL="mysql+pymysql://root:ci-only-mysql-password@127.0.0.1:3306/scentrise_ci_$scenario" \
-    python tools/ci_mysql_baseline.py | tee "ci-evidence/mysql-$scenario.txt"
+    python tools/ci_mysql_baseline.py 2>&1 | tee "ci-evidence/mysql-$scenario.txt"
 done
 docker build --progress=plain -t issue4-candidate .
 rollback_context="$(mktemp -d)"
