@@ -1,165 +1,150 @@
-import logging
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import or_
+
 from wxcloudrun import db
-from wxcloudrun.model import Category, Product, Tag, Collection, Article, CompanyInfo, Admin
-
-logger = logging.getLogger('log')
+from wxcloudrun.model import Admin, Article, Category, Collection, CompanyInfo, Product, Tag
 
 
-# ==================== 产品 ====================
+def get_products(
+    category_id=None,
+    tag_id=None,
+    keyword=None,
+    page=1,
+    page_size=20,
+    include_inactive=False,
+):
+    query = Product.query
+    if not include_inactive:
+        query = query.filter(Product.is_active.is_(True))
+    if category_id:
+        query = query.filter(Product.category_id == category_id)
+    if tag_id:
+        query = query.join(Product.tags).filter(Tag.id == tag_id)
+    if keyword:
+        pattern = f"%{keyword}%"
+        query = query.filter(
+            or_(
+                Product.product_name.like(pattern),
+                Product.product_model.like(pattern),
+                Product.product_series.like(pattern),
+            )
+        )
+    total = query.count()
+    products = (
+        query.order_by(Product.sort_order.asc(), Product.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return [product.to_dict() for product in products], total
 
-def get_products(category_id=None, tag_id=None, keyword=None, page=1, page_size=20, include_inactive=False):
-    try:
-        q = Product.query
-        if not include_inactive:
-            q = q.filter(Product.is_active == True)
-        if category_id:
-            q = q.filter(Product.category_id == category_id)
-        if tag_id:
-            q = q.join(Product.tags).filter(Tag.id == tag_id)
-        if keyword:
-            like = f'%{keyword}%'
-            q = q.filter(db.or_(
-                Product.product_name.like(like),
-                Product.product_model.like(like),
-                Product.product_series.like(like),
-            ))
-        total = q.count()
-        products = q.order_by(Product.sort_order.asc(), Product.id.desc())\
-                    .offset((page - 1) * page_size).limit(page_size).all()
-        return [p.to_dict() for p in products], total
-    except OperationalError as e:
-        logger.error(f"get_products error: {e}")
-        return [], 0
 
-
-def get_product_by_id(product_id):
-    try:
-        return Product.query.get(product_id)
-    except OperationalError as e:
-        logger.error(f"get_product_by_id error: {e}")
-        return None
+def get_product_by_id(product_id, *, include_inactive=True):
+    product = db.session.get(Product, product_id)
+    if product and (include_inactive or product.is_active):
+        return product
+    return None
 
 
 def get_product_by_model(model):
-    try:
-        return Product.query.filter(Product.product_model == model).first()
-    except OperationalError as e:
-        logger.error(f"get_product_by_model error: {e}")
-        return None
+    return Product.query.filter(Product.product_model == model).first()
 
-
-# ==================== 分类 ====================
 
 def get_categories():
-    try:
-        return [c.to_dict() for c in Category.query.order_by(Category.sort_order.asc()).all()]
-    except OperationalError as e:
-        logger.error(f"get_categories error: {e}")
-        return []
+    return [
+        category.to_dict() for category in Category.query.order_by(Category.sort_order.asc()).all()
+    ]
 
 
 def get_or_create_category(name):
-    try:
-        cat = Category.query.filter(Category.name == name).first()
-        if not cat:
-            cat = Category(name=name)
-            db.session.add(cat)
-            db.session.flush()
-        return cat
-    except OperationalError as e:
-        logger.error(f"get_or_create_category error: {e}")
-        return None
+    category = Category.query.filter(Category.name == name).first()
+    if not category:
+        category = Category(name=name)
+        db.session.add(category)
+        db.session.flush()
+    return category
 
-
-# ==================== 标签 ====================
 
 def get_tags(category=None, page=None, page_size=20):
-    """获取标签列表。page=None 时返回全部（旧行为），传 page 则返回 (list, total) 分页"""
-    try:
-        q = Tag.query
-        if category:
-            q = q.filter(Tag.category == category)
-        if page is not None:
-            total = q.count()
-            tags = q.order_by(Tag.sort_order.asc()).offset((page - 1) * page_size).limit(page_size).all()
-            return [t.to_dict() for t in tags], total
-        return [t.to_dict() for t in q.order_by(Tag.sort_order.asc()).all()]
-    except OperationalError as e:
-        logger.error(f"get_tags error: {e}")
-        return ([], 0) if page is not None else []
+    query = Tag.query
+    if category:
+        query = query.filter(Tag.category == category)
+    if page is not None:
+        total = query.count()
+        tags = (
+            query.order_by(Tag.sort_order.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return [tag.to_dict() for tag in tags], total
+    return [tag.to_dict() for tag in query.order_by(Tag.sort_order.asc()).all()]
 
 
-def get_or_create_tag(name, category='适用产品', sort_order=0):
-    try:
-        tag = Tag.query.filter(Tag.name == name).first()
-        if not tag:
-            tag = Tag(name=name, category=category, sort_order=sort_order)
-            db.session.add(tag)
-            db.session.flush()
-        return tag
-    except OperationalError as e:
-        logger.error(f"get_or_create_tag error: {e}")
-        return None
+def get_or_create_tag(name, category="适用产品", sort_order=0):
+    tag = Tag.query.filter(Tag.name == name).first()
+    if not tag:
+        tag = Tag(name=name, category=category, sort_order=sort_order)
+        db.session.add(tag)
+        db.session.flush()
+    return tag
 
 
-# ==================== 合集 ====================
+def get_collections(
+    carousel_only=False,
+    page=None,
+    page_size=20,
+    *,
+    include_inactive_products=False,
+):
+    query = Collection.query
+    if carousel_only:
+        query = query.filter(Collection.is_carousel.is_(True))
+    if page is not None:
+        total = query.count()
+        collections = (
+            query.order_by(Collection.sort_order.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return [
+            collection.to_dict(include_inactive_products=include_inactive_products)
+            for collection in collections
+        ], total
+    return [
+        collection.to_dict(include_inactive_products=include_inactive_products)
+        for collection in query.order_by(Collection.sort_order.asc()).all()
+    ]
 
-def get_collections(carousel_only=False, page=None, page_size=20):
-    """获取合集列表。page=None 时返回全部（旧行为），传 page 则返回 (list, total) 分页"""
-    try:
-        q = Collection.query
-        if carousel_only:
-            q = q.filter(Collection.is_carousel == True)
-        if page is not None:
-            total = q.count()
-            cols = q.order_by(Collection.sort_order.asc()).offset((page - 1) * page_size).limit(page_size).all()
-            return [c.to_dict() for c in cols], total
-        return [c.to_dict() for c in q.order_by(Collection.sort_order.asc()).all()]
-    except OperationalError as e:
-        logger.error(f"get_collections error: {e}")
-        return ([], 0) if page is not None else []
-
-
-# ==================== 文章 ====================
 
 def get_articles(page=1, page_size=10, published_only=True):
-    try:
-        q = Article.query
-        if published_only:
-            q = q.filter(Article.is_published == True)
-        total = q.count()
-        articles = q.order_by(Article.published_at.desc(), Article.sort_order.asc())\
-                    .offset((page - 1) * page_size).limit(page_size).all()
-        return [a.to_dict() for a in articles], total
-    except OperationalError as e:
-        logger.error(f"get_articles error: {e}")
-        return [], 0
+    query = Article.query
+    if published_only is True:
+        query = query.filter(Article.is_published.is_(True))
+    elif published_only is False:
+        query = query.filter(Article.is_published.is_(False))
+    total = query.count()
+    articles = (
+        query.order_by(Article.published_at.desc(), Article.sort_order.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return [article.to_dict() for article in articles], total
 
 
-def get_article_by_id(article_id):
-    try:
-        return Article.query.get(article_id)
-    except OperationalError as e:
-        logger.error(f"get_article_by_id error: {e}")
-        return None
+def get_article_by_id(article_id, *, published_only=False):
+    article = db.session.get(Article, article_id)
+    if article and (not published_only or article.is_published):
+        return article
+    return None
 
-
-# ==================== 公司信息 ====================
 
 def get_company_info():
-    try:
-        return CompanyInfo.query.first()
-    except OperationalError as e:
-        logger.error(f"get_company_info error: {e}")
-        return None
+    return CompanyInfo.query.first()
 
-
-# ==================== 管理员 ====================
 
 def get_admin_by_username(username):
-    try:
-        return Admin.query.filter(Admin.username == username, Admin.is_active == True).first()
-    except OperationalError as e:
-        logger.error(f"get_admin_by_username error: {e}")
+    if not username:
         return None
+    return Admin.query.filter(Admin.username == username, Admin.is_active.is_(True)).first()

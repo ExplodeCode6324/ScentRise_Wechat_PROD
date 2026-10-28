@@ -1,678 +1,877 @@
+"""Public mini-program API and authenticated administration API."""
+
+from __future__ import annotations
+
 import json
+import threading
+import time
+import uuid
+from collections import defaultdict, deque
 from datetime import datetime
-from flask import render_template, request
+
+import bcrypt
+from flask import g, render_template, request
+from sqlalchemy.exc import IntegrityError
+
 from wxcloudrun import app, db
+from wxcloudrun.admin.auth import generate_token, require_admin, require_roles
 from wxcloudrun.dao import (
-    get_products, get_product_by_id, get_product_by_model,
-    get_categories, get_or_create_category,
-    get_tags, get_or_create_tag,
-    get_collections, get_articles, get_article_by_id,
-    get_company_info, get_admin_by_username,
+    get_article_by_id,
+    get_articles,
+    get_categories,
+    get_collections,
+    get_company_info,
+    get_product_by_id,
+    get_products,
+    get_tags,
 )
-from wxcloudrun.model import Product, Article, Category, CompanyInfo, Admin
-from wxcloudrun.response import make_succ_empty_response, make_succ_response, make_err_response
-from wxcloudrun.storage import upload as storage_upload
+from wxcloudrun.importer import ImportRejected, execute_import, preflight_import
+from wxcloudrun.model import (
+    Admin,
+    Article,
+    Category,
+    Collection,
+    CompanyInfo,
+    Product,
+    ProductImage,
+    Tag,
+    collection_products,
+)
+from wxcloudrun.response import make_err_response, make_succ_empty_response, make_succ_response
 from wxcloudrun.storage import delete_files as storage_delete
-from wxcloudrun.admin.auth import require_admin
+from wxcloudrun.storage import upload as storage_upload
+from wxcloudrun.validation import (
+    ValidationError,
+    clean_int,
+    clean_text,
+    pagination_args,
+    sanitize_rich_text,
+    validate_image_upload,
+)
+
+_login_attempts = defaultdict(deque)
+_login_lock = threading.Lock()
+_dummy_password_hash = bcrypt.hashpw(b"invalid-password", bcrypt.gensalt(rounds=12))
+_ROLE_EDITOR = ("admin", "editor")
 
 
-@app.route('/')
+@app.errorhandler(ValidationError)
+def handle_validation_error(error):
+    db.session.rollback()
+    return make_err_response(str(error), 422, error_code="validation_error")
+
+
+@app.errorhandler(IntegrityError)
+def handle_integrity_error(error):
+    db.session.rollback()
+    app.logger.info("database constraint rejected request: %s", error.orig)
+    return make_err_response("数据冲突，请检查名称、型号等唯一字段", 409, error_code="conflict")
+
+
+def _json_body():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValidationError("请求体必须是JSON对象")
+    return data
+
+
+def _bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValidationError("布尔字段格式不正确")
+
+
+def _id_list(value, field, *, max_items=5000):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValidationError(f"{field}必须是数组")
+    if len(value) > max_items:
+        raise ValidationError(f"{field}最多包含{max_items}项")
+    result = []
+    for item in value:
+        item_id = clean_int(item, field, minimum=1)
+        if item_id not in result:
+            result.append(item_id)
+    return result
+
+
+def _all_product_urls(product):
+    urls = [product.product_image]
+    if product.product_images:
+        try:
+            parsed = json.loads(product.product_images)
+            if isinstance(parsed, list):
+                urls.extend(value for value in parsed if isinstance(value, str))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    urls.extend(
+        image.image_url for image in ProductImage.query.filter_by(product_id=product.id).all()
+    )
+    return list(dict.fromkeys(filter(None, urls)))
+
+
+def _upload_image(file_storage, folder):
+    data, extension, content_type = validate_image_upload(
+        file_storage, max_bytes=app.config["MAX_IMAGE_BYTES"]
+    )
+    cloud_path = f"{folder}/{uuid.uuid4().hex}.{extension}"
+    result = storage_upload(data, cloud_path, content_type)
+    if not result.get("success"):
+        raise ValidationError(result.get("error", "图片上传失败"))
+    return result
+
+
+def _replace_storage_url(record, attribute, result):
+    old_url = getattr(record, attribute, None)
+    setattr(record, attribute, result["url"])
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        storage_delete([result["url"]])
+        raise
+    if old_url and old_url != result["url"]:
+        storage_delete([old_url])
+
+
+def _login_key(username):
+    return f"{request.remote_addr or 'unknown'}:{username}"
+
+
+def _is_login_limited(key):
+    now = time.monotonic()
+    with _login_lock:
+        attempts = _login_attempts[key]
+        while attempts and attempts[0] < now - 900:
+            attempts.popleft()
+        return len(attempts) >= 5
+
+
+def _record_login_failure(key):
+    with _login_lock:
+        _login_attempts[key].append(time.monotonic())
+
+
+def _clear_login_failures(key):
+    with _login_lock:
+        _login_attempts.pop(key, None)
+
+
+def _product_collections(product_id):
+    rows = db.session.execute(
+        db.select(collection_products.c.collection_id).where(
+            collection_products.c.product_id == product_id
+        )
+    ).all()
+    return [row[0] for row in rows]
+
+
+def _apply_collection_ids(product_id, collection_ids):
+    collections = (
+        Collection.query.filter(Collection.id.in_(collection_ids)).all() if collection_ids else []
+    )
+    if len(collections) != len(collection_ids):
+        raise ValidationError("合集ID中包含不存在的记录")
+    db.session.execute(
+        collection_products.delete().where(collection_products.c.product_id == product_id)
+    )
+    for collection_id in collection_ids:
+        db.session.execute(
+            collection_products.insert().values(
+                collection_id=collection_id,
+                product_id=product_id,
+                sort_order=0,
+            )
+        )
+
+
+def _apply_product_payload(product, data, *, creating=False):
+    category_id = clean_int(data.get("categoryId", product.category_id), "产品系列", minimum=1)
+    category = db.session.get(Category, category_id)
+    if not category:
+        raise ValidationError("产品系列不存在")
+    product.product_name = clean_text(
+        data.get("productName", product.product_name), "产品名称", required=True, max_length=200
+    )
+    product.product_model = clean_text(
+        data.get("productModel", product.product_model), "产品型号", required=True, max_length=100
+    )
+    product.product_english_name = clean_text(
+        data.get("productEnglishName", product.product_english_name), "英文名称", max_length=200
+    )
+    product.product_desc = clean_text(
+        data.get("productDesc", product.product_desc), "产品描述", max_length=200_000
+    )
+    product.category = category
+    product.product_series = category.name
+    product.sort_order = clean_int(data.get("sortOrder", product.sort_order), "排序", default=0)
+    product.is_active = _bool(data.get("isActive"), True if creating else product.is_active)
+    with db.session.no_autoflush:
+        duplicate = Product.query.filter(
+            Product.product_model == product.product_model, Product.id != (product.id or 0)
+        ).first()
+    if duplicate:
+        raise ValidationError(f"产品型号“{product.product_model}”已存在")
+    if "productImages" in data:
+        images = data["productImages"]
+        if not isinstance(images, list) or len(images) > 100:
+            raise ValidationError("产品图片列表格式不正确或数量超过100")
+        product.product_images = json.dumps(
+            [clean_text(url, "图片地址", max_length=500) for url in images], ensure_ascii=False
+        )
+    if "productImage" in data:
+        product.product_image = clean_text(data["productImage"], "主图地址", max_length=500) or None
+    if "tagIds" in data or creating:
+        tag_ids = _id_list(data.get("tagIds", []), "标签ID", max_items=100)
+        requested_tags = Tag.query.filter(Tag.id.in_(tag_ids)).all() if tag_ids else []
+        if len(requested_tags) != len(tag_ids):
+            raise ValidationError("标签ID中包含不存在的记录")
+        requested_tags = [tag for tag in requested_tags if tag.category != "产品系列"]
+        series_tag = Tag.query.filter_by(name=category.name).first()
+        if series_tag and series_tag.category != "产品系列":
+            raise ValidationError(f"标签“{category.name}”已被用于其它分类")
+        if not series_tag:
+            series_tag = Tag(name=category.name, category="产品系列", sort_order=1)
+            db.session.add(series_tag)
+        product.tags = [series_tag, *requested_tags]
+
+
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
 
-# ==================== 小程序 API ====================
+@app.route("/healthz")
+def healthz():
+    return make_succ_response({"status": "ok"})
 
-@app.route('/api/products', methods=['GET'])
+
+@app.route("/readyz")
+def readyz():
+    db.session.execute(db.select(1))
+    return make_succ_response({"status": "ready"})
+
+
+@app.route("/api/products", methods=["GET"])
 def api_products():
-    category_id = request.args.get('category_id', type=int)
-    tag_id = request.args.get('tag_id', type=int)
-    keyword = request.args.get('keyword')
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
-    products, total = get_products(category_id=category_id, tag_id=tag_id, keyword=keyword, page=page, page_size=page_size)
-    return make_succ_response({'list': products, 'total': total, 'page': page, 'pageSize': page_size})
+    page, page_size = pagination_args(request.args)
+    products, total = get_products(
+        category_id=request.args.get("category_id", type=int),
+        tag_id=request.args.get("tag_id", type=int),
+        keyword=clean_text(request.args.get("keyword"), "关键词", max_length=100),
+        page=page,
+        page_size=page_size,
+    )
+    return make_succ_response(
+        {"list": products, "total": total, "page": page, "pageSize": page_size}
+    )
 
 
-@app.route('/api/products/<int:product_id>', methods=['GET'])
+@app.route("/api/products/<int:product_id>", methods=["GET"])
 def api_product_detail(product_id):
-    product = get_product_by_id(product_id)
-    if not product:
-        return make_err_response('产品不存在')
-    return make_succ_response(product.to_dict())
+    product = get_product_by_id(product_id, include_inactive=False)
+    return (
+        make_succ_response(product.to_dict()) if product else make_err_response("产品不存在", 404)
+    )
 
 
-@app.route('/api/categories', methods=['GET'])
+@app.route("/api/categories", methods=["GET"])
 def api_categories():
     return make_succ_response(get_categories())
 
 
-@app.route('/api/tags', methods=['GET'])
+@app.route("/api/tags", methods=["GET"])
 def api_tags():
-    tag_category = request.args.get('category')
-    return make_succ_response(get_tags(category=tag_category))
+    category = clean_text(request.args.get("category"), "标签分类", max_length=50)
+    return make_succ_response(get_tags(category=category or None))
 
 
-@app.route('/api/collections', methods=['GET'])
+@app.route("/api/collections", methods=["GET"])
 def api_collections():
-    carousel_only = bool(request.args.get('carousel', type=int))
-    return make_succ_response(get_collections(carousel_only=carousel_only))
+    return make_succ_response(
+        get_collections(carousel_only=_bool(request.args.get("carousel"), False))
+    )
 
 
-@app.route('/api/articles', methods=['GET'])
+@app.route("/api/collections/<int:collection_id>", methods=["GET"])
+def api_collection_detail(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    return (
+        make_succ_response(collection.to_dict())
+        if collection
+        else make_err_response("合集不存在", 404)
+    )
+
+
+@app.route("/api/articles", methods=["GET"])
 def api_articles():
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 10, type=int)
+    page, page_size = pagination_args(request.args, default_size=10)
     articles, total = get_articles(page=page, page_size=page_size, published_only=True)
-    return make_succ_response({'list': articles, 'total': total, 'page': page, 'pageSize': page_size})
+    return make_succ_response(
+        {"list": articles, "total": total, "page": page, "pageSize": page_size}
+    )
 
 
-@app.route('/api/articles/<int:article_id>', methods=['GET'])
+@app.route("/api/articles/<int:article_id>", methods=["GET"])
 def api_article_detail(article_id):
-    article = get_article_by_id(article_id)
-    if not article:
-        return make_err_response('文章不存在')
-    return make_succ_response(article.to_dict())
+    article = get_article_by_id(article_id, published_only=True)
+    return (
+        make_succ_response(article.to_dict()) if article else make_err_response("文章不存在", 404)
+    )
 
 
-@app.route('/api/company', methods=['GET'])
+@app.route("/api/company", methods=["GET"])
 def api_company_info():
     info = get_company_info()
     return make_succ_response(info.to_dict() if info else {})
 
 
-# ==================== 后管 API ====================
-
-@app.route('/api/admin/login', methods=['POST'])
+@app.route("/api/admin/login", methods=["POST"])
 def admin_login():
-    data = request.get_json()
-    admin = get_admin_by_username(data.get('username'))
-    if not admin:
-        return make_err_response('账号或密码错误')
-    import bcrypt
-    if not bcrypt.checkpw(data.get('password', '').encode(), admin.passwd.encode()):
-        return make_err_response('账号或密码错误')
+    data = _json_body()
+    username = clean_text(data.get("username"), "账号", required=True, max_length=50)
+    password = clean_text(data.get("password"), "密码", required=True, max_length=200)
+    key = _login_key(username)
+    if _is_login_limited(key):
+        return make_err_response("登录失败次数过多，请15分钟后再试", 429)
+    admin = Admin.query.filter_by(username=username, is_active=True).first()
+    password_hash = admin.passwd.encode("utf-8") if admin else _dummy_password_hash
+    valid = bcrypt.checkpw(password.encode("utf-8"), password_hash)
+    if not admin or not valid:
+        _record_login_failure(key)
+        return make_err_response("账号或密码错误", 401)
+    _clear_login_failures(key)
     admin.last_login = datetime.now()
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        app.logger.warning('admin_login commit failed, retrying with fresh connection')
-        # 重新获取管理员对象（触发 pool_pre_ping 拿新连接）
-        admin = get_admin_by_username(data.get('username'))
-        admin.last_login = datetime.now()
-        db.session.commit()
-    from wxcloudrun.admin.auth import generate_token
-    token = generate_token(admin.id, admin.username, admin.role or 'editor')
-    return make_succ_response({'token': token, 'admin': admin.to_dict()})
+    db.session.commit()
+    token = generate_token(admin.id, admin.username, admin.role or "editor")
+    response = make_succ_response({"admin": admin.to_dict()})
+    response.set_cookie(
+        "admin_session",
+        token,
+        httponly=True,
+        secure=not app.config["TESTING"],
+        samesite="Strict",
+        max_age=app.config["JWT_EXP_HOURS"] * 3600,
+        path="/",
+    )
+    return response
 
 
-@app.route('/api/admin/verify', methods=['GET'])
+@app.route("/api/admin/logout", methods=["POST"])
+def admin_logout():
+    response = make_succ_empty_response()
+    response.delete_cookie("admin_session", path="/", samesite="Strict")
+    return response
+
+
+@app.route("/api/admin/verify", methods=["GET"])
 @require_admin
 def admin_verify():
-    """验证 token 有效性，返回当前管理员信息"""
-    from flask import g
-    return make_succ_response({
-        'admin_id': g.admin_id,
-        'username': g.admin_username,
-        'role': g.admin_role,
-    })
+    return make_succ_response(g.admin.to_dict())
 
 
-# --- 产品 CRUD ---
-
-@app.route('/api/admin/products', methods=['POST'])
+@app.route("/api/admin/password", methods=["PUT"])
 @require_admin
-def admin_create_product():
-    data = request.get_json()
-    product = Product(
-        product_series=data.get('productSeries'),
-        product_name=data.get('productName'),
-        product_english_name=data.get('productEnglishName', ''),
-        product_model=data.get('productModel'),
-        product_desc=data.get('productDesc'),
-        product_image=data.get('productImage'),
-        product_images=json.dumps(data.get('productImages', []), ensure_ascii=False),
-        category_id=data.get('categoryId'),
+def admin_change_password():
+    data = _json_body()
+    current_password = clean_text(
+        data.get("currentPassword"), "当前密码", required=True, max_length=200
     )
-    db.session.add(product)
-    # 关联标签
-    if data.get('tagIds'):
-        from wxcloudrun.model import Tag
-        tags = Tag.query.filter(Tag.id.in_(data['tagIds'])).all()
-        product.tags = tags
+    new_password = clean_text(data.get("newPassword"), "新密码", required=True, max_length=72)
+    if len(new_password) < 12:
+        raise ValidationError("新密码至少12个字符")
+    if not bcrypt.checkpw(current_password.encode(), g.admin.passwd.encode()):
+        return make_err_response("当前密码错误", 401)
+    g.admin.passwd = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    g.admin.updated_at = datetime.now()
     db.session.commit()
-    return make_succ_response(product.to_dict())
+    response = make_succ_empty_response()
+    response.delete_cookie("admin_session", path="/", samesite="Strict")
+    return response
 
 
-@app.route('/api/admin/products/<int:product_id>', methods=['PUT'])
-@require_admin
-def admin_update_product(product_id):
-    product = get_product_by_id(product_id)
-    if not product:
-        return make_err_response('产品不存在')
-    data = request.get_json()
-    # 字段映射：前端 camelCase → 后端 snake_case
-    _field_map = {
-        'productSeries': 'product_series', 'productName': 'product_name',
-        'productEnglishName': 'product_english_name',
-        'productModel': 'product_model', 'productDesc': 'product_desc',
-        'productImage': 'product_image', 'categoryId': 'category_id',
-        'sortOrder': 'sort_order',
-    }
-    for js_field, py_field in _field_map.items():
-        if js_field in data:
-            setattr(product, py_field, data[js_field])
-    if 'productImages' in data:
-        product.product_images = json.dumps(data['productImages'], ensure_ascii=False)
-    if 'isActive' in data:
-        product.is_active = data['isActive']
-    if 'tagIds' in data:
-        from wxcloudrun.model import Tag
-        product.tags = Tag.query.filter(Tag.id.in_(data['tagIds'])).all()
-    db.session.commit()
-    return make_succ_response(product.to_dict())
-
-
-@app.route('/api/admin/products/<int:product_id>', methods=['DELETE'])
-@require_admin
-def admin_delete_product(product_id):
-    product = get_product_by_id(product_id)
-    if not product:
-        return make_err_response('产品不存在')
-
-    # 收集所有关联的云存储文件
-    storage_urls = []
-    if product.product_image:
-        storage_urls.append(product.product_image)
-    from wxcloudrun.model import ProductImage
-    images = ProductImage.query.filter_by(product_id=product_id).all()
-    for img in images:
-        if img.image_url:
-            storage_urls.append(img.image_url)
-
-    # 先删云存储（失败不阻塞）
-    if storage_urls:
-        result = storage_delete(storage_urls)
-        app.logger.info('Product %d: cleaned %d storage files', product_id, result.get('deleted', 0))
-
-    db.session.delete(product)
-    db.session.commit()
-    return make_succ_empty_response()
-
-
-# --- Excel 导入 ---
-
-@app.route('/api/admin/import', methods=['POST'])
-@require_admin
-def admin_import_excel():
-    """Excel 导入：遇新产品系列/标签自动创建，重复型号自动 UPDATE"""
-    data = request.get_json()
-    rows = data.get('rows', [])
-    imported = {'created': 0, 'updated': 0, 'errors': []}
-
-    for i, row in enumerate(rows):
-        try:
-            series_name = row.get('productSeries', '').strip()
-            tag_names = row.get('tags', [])  # 前端传来的标签列表
-
-            if not series_name or not row.get('productModel'):
-                imported['errors'].append(f'第{i+2}行: 缺少产品系列或型号')
-                continue
-
-            # 自动创建/匹配产品系列（作为分类）
-            cat = get_or_create_category(series_name)
-
-            # 产品：按型号查重，存在则更新
-            existing = get_product_by_model(row['productModel'])
-            if existing:
-                existing.product_name = row.get('productName', existing.product_name)
-                existing.product_english_name = row.get('productEnglishName', existing.product_english_name or '')
-                existing.product_series = series_name
-                existing.product_desc = row.get('productDesc')
-                existing.category_id = cat.id
-                imported['updated'] += 1
-                product = existing
-            else:
-                product = Product(
-                    product_series=series_name,
-                    product_name=row.get('productName'),
-                    product_english_name=row.get('productEnglishName', ''),
-                    product_model=row['productModel'],
-                    product_desc=row.get('productDesc'),
-                    category_id=cat.id,
-                )
-                db.session.add(product)
-                db.session.flush()
-                imported['created'] += 1
-
-            # 标签关联：产品系列作为标签(category='产品系列',sortOrder=1)
-            all_tags = []
-            series_tag = get_or_create_tag(series_name, category='产品系列', sort_order=1)
-            if series_tag:
-                all_tags.append(series_tag)
-
-            # 适用产品标签(category='适用产品',sortOrder=2)
-            if tag_names:
-                for name in tag_names:
-                    name = name.strip()
-                    if name and name != series_name:  # 去重：如果和系列同名只保留一个
-                        t = get_or_create_tag(name, category='适用产品', sort_order=2)
-                        if t:
-                            all_tags.append(t)
-
-            product.tags = all_tags
-
-        except Exception as e:
-            imported['errors'].append(f'第{i+2}行: {str(e)}')
-
-    db.session.commit()
-    return make_succ_response(imported)
-
-
-# --- 文章管理 ---
-
-@app.route('/api/admin/articles', methods=['POST'])
-@require_admin
-def admin_create_article():
-    data = request.get_json()
-    article = Article(
-        title=data['title'], author=data.get('author'),
-        content=data['content'], cover_image=data.get('coverImage'),
-        is_published=data.get('isPublished', False),
-        published_at=datetime.now() if data.get('isPublished') else None,
-        sort_order=data.get('sortOrder', 0),
-    )
-    db.session.add(article)
-    db.session.commit()
-    return make_succ_response(article.to_dict())
-
-
-@app.route('/api/admin/articles/<int:article_id>', methods=['PUT'])
-@require_admin
-def admin_update_article(article_id):
-    article = get_article_by_id(article_id)
-    if not article:
-        return make_err_response('文章不存在')
-    data = request.get_json()
-    for field in ['title', 'author', 'content', 'cover_image', 'sort_order']:
-        if field in data:
-            setattr(article, field, data[field])
-    if 'isPublished' in data:
-        article.is_published = data['isPublished']
-        if data['isPublished'] and not article.published_at:
-            article.published_at = datetime.now()
-    db.session.commit()
-    return make_succ_response(article.to_dict())
-
-
-@app.route('/api/admin/articles/<int:article_id>', methods=['DELETE'])
-@require_admin
-def admin_delete_article(article_id):
-    article = get_article_by_id(article_id)
-    if not article:
-        return make_err_response('文章不存在')
-    db.session.delete(article)
-    db.session.commit()
-    return make_succ_empty_response()
-
-
-# --- 后管 产品列表/详情（分页、搜索） ---
-
-@app.route('/api/admin/products', methods=['GET'])
+@app.route("/api/admin/products", methods=["GET"])
 @require_admin
 def admin_get_products():
-    category_id = request.args.get('category_id', type=int)
-    keyword = request.args.get('keyword')
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
-    products, total = get_products(category_id=category_id, keyword=keyword, page=page, page_size=page_size, include_inactive=True)
-    return make_succ_response({'list': products, 'total': total, 'page': page, 'pageSize': page_size})
+    page, page_size = pagination_args(request.args)
+    products, total = get_products(
+        category_id=request.args.get("category_id", type=int),
+        keyword=clean_text(request.args.get("keyword"), "关键词", max_length=100),
+        page=page,
+        page_size=page_size,
+        include_inactive=True,
+    )
+    return make_succ_response(
+        {"list": products, "total": total, "page": page, "pageSize": page_size}
+    )
 
 
-@app.route('/api/admin/products/<int:product_id>', methods=['GET'])
+@app.route("/api/admin/products/<int:product_id>", methods=["GET"])
 @require_admin
 def admin_get_product(product_id):
     product = get_product_by_id(product_id)
     if not product:
-        return make_err_response('产品不存在')
-    from wxcloudrun.model import ProductImage
-    images = ProductImage.query.filter_by(product_id=product_id).order_by(ProductImage.sort_order).all()
+        return make_err_response("产品不存在", 404)
     data = product.to_dict()
-    data['images'] = [img.to_dict() for img in images]
+    data["images"] = [
+        image.to_dict()
+        for image in ProductImage.query.filter_by(product_id=product_id)
+        .order_by(ProductImage.sort_order)
+        .all()
+    ]
+    data["collectionIds"] = _product_collections(product_id)
     return make_succ_response(data)
 
 
-# --- 后管 产品图片上传 ---
+@app.route("/api/admin/products", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
+def admin_create_product():
+    data = _json_body()
+    product = Product(is_active=True, sort_order=0)
+    db.session.add(product)
+    _apply_product_payload(product, data, creating=True)
+    db.session.flush()
+    if "collectionIds" in data:
+        _apply_collection_ids(product.id, _id_list(data["collectionIds"], "合集ID"))
+    db.session.commit()
+    return make_succ_response(product.to_dict(), 201)
 
-@app.route('/api/admin/products/<int:product_id>/images', methods=['POST'])
-@require_admin
+
+@app.route("/api/admin/products/<int:product_id>", methods=["PUT"])
+@require_roles(*_ROLE_EDITOR)
+def admin_update_product(product_id):
+    product = get_product_by_id(product_id)
+    if not product:
+        return make_err_response("产品不存在", 404)
+    data = _json_body()
+    _apply_product_payload(product, data)
+    if "collectionIds" in data:
+        _apply_collection_ids(product.id, _id_list(data["collectionIds"], "合集ID"))
+    db.session.commit()
+    return make_succ_response(product.to_dict())
+
+
+@app.route("/api/admin/products/<int:product_id>", methods=["DELETE"])
+@require_roles("admin")
+def admin_delete_product(product_id):
+    product = get_product_by_id(product_id)
+    if not product:
+        return make_err_response("产品不存在", 404)
+    urls = _all_product_urls(product)
+    db.session.delete(product)
+    db.session.commit()
+    storage_delete(urls)
+    return make_succ_empty_response()
+
+
+@app.route("/api/admin/import/preflight", methods=["POST"])
+@require_roles("admin")
+def admin_import_preflight():
+    data = _json_body()
+    result = preflight_import(
+        data.get("rows"), data.get("options"), max_rows=app.config["MAX_IMPORT_ROWS"]
+    )
+    return make_succ_response(
+        {key: value for key, value in result.items() if not key.startswith("_")}
+    )
+
+
+@app.route("/api/admin/import", methods=["POST"])
+@require_roles("admin")
+def admin_import_excel():
+    data = _json_body()
+    try:
+        result = execute_import(
+            data.get("rows"),
+            data.get("options"),
+            data.get("planHash"),
+            confirm_warnings=_bool(data.get("confirmWarnings"), False),
+            max_rows=app.config["MAX_IMPORT_ROWS"],
+        )
+    except ImportRejected as error:
+        db.session.rollback()
+        return make_err_response(
+            str(error), error.status, details=error.preflight, error_code="import_rejected"
+        )
+    return make_succ_response(result)
+
+
+@app.route("/api/admin/products/<int:product_id>/images", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_upload_product_image(product_id):
     product = get_product_by_id(product_id)
     if not product:
-        return make_err_response('产品不存在')
-    from wxcloudrun.model import ProductImage
-    image_type = request.form.get('image_type', 'detail')
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    # 生成云存储路径
-    import time
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'jpg'
-    if image_type == 'main':
-        cloud_path = 'product_image/{}/main.{}'.format(product_id, ext)
-    else:
-        cloud_path = 'product_image/{}/detail_{}.{}'.format(product_id, int(time.time()), ext)
-    # 上传到云存储
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    if image_type == 'main':
-        ProductImage.query.filter_by(product_id=product_id, is_primary=True).update({'is_primary': False})
-        product.product_image = storage_url
-    img = ProductImage(product_id=product_id, image_url=storage_url, is_primary=(image_type == 'main'))
-    db.session.add(img)
-    db.session.commit()
-    return make_succ_response(img.to_dict())
+        return make_err_response("产品不存在", 404)
+    image_type = request.form.get("image_type", "detail")
+    if image_type not in {"main", "detail"}:
+        raise ValidationError("图片类型只能是main或detail")
+    result = _upload_image(request.files.get("file"), f"product_image/{product_id}")
+    image = ProductImage(
+        product_id=product_id,
+        image_url=result["url"],
+        is_primary=image_type == "main",
+        sort_order=ProductImage.query.filter_by(product_id=product_id).count(),
+    )
+    old_main = None
+    if image_type == "main":
+        old_main = product.product_image
+        ProductImage.query.filter_by(product_id=product_id, is_primary=True).update(
+            {"is_primary": False}
+        )
+        product.product_image = result["url"]
+    db.session.add(image)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        storage_delete([result["url"]])
+        raise
+    if old_main and old_main != result["url"]:
+        storage_delete([old_main])
+    return make_succ_response(image.to_dict(), 201)
 
 
-@app.route('/api/admin/products/<int:product_id>/images/<int:image_id>', methods=['DELETE'])
-@require_admin
+@app.route("/api/admin/products/<int:product_id>/images/<int:image_id>", methods=["DELETE"])
+@require_roles(*_ROLE_EDITOR)
 def admin_delete_product_image(product_id, image_id):
-    from wxcloudrun.model import ProductImage
-    img = ProductImage.query.filter_by(id=image_id, product_id=product_id).first()
-    if not img:
-        return make_err_response('图片不存在')
-    was_primary = img.is_primary
-    db.session.delete(img)
+    image = ProductImage.query.filter_by(id=image_id, product_id=product_id).first()
+    if not image:
+        return make_err_response("图片不存在", 404)
+    image_url, was_primary = image.image_url, image.is_primary
+    db.session.delete(image)
+    db.session.flush()
     if was_primary:
-        next_img = ProductImage.query.filter_by(product_id=product_id).order_by(ProductImage.sort_order).first()
-        if next_img:
-            next_img.is_primary = True
-            from wxcloudrun.model import Product
-            Product.query.filter_by(id=product_id).update({'product_image': next_img.image_url})
-        else:
-            from wxcloudrun.model import Product
-            Product.query.filter_by(id=product_id).update({'product_image': None})
+        next_image = (
+            ProductImage.query.filter_by(product_id=product_id)
+            .order_by(ProductImage.sort_order)
+            .first()
+        )
+        product = db.session.get(Product, product_id)
+        if product:
+            product.product_image = next_image.image_url if next_image else None
+        if next_image:
+            next_image.is_primary = True
     db.session.commit()
+    storage_delete([image_url])
     return make_succ_empty_response()
 
 
-# --- 后管 标签 CRUD ---
-
-@app.route('/api/admin/tags', methods=['GET'])
+@app.route("/api/admin/tags", methods=["GET"])
 @require_admin
 def admin_get_tags():
-    category = request.args.get('category')
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
-    tags, total = get_tags(category=category, page=page, page_size=page_size)
-    return make_succ_response({'list': tags, 'total': total, 'page': page, 'pageSize': page_size})
+    page, page_size = pagination_args(request.args)
+    category = clean_text(request.args.get("category"), "标签分类", max_length=50)
+    tags, total = get_tags(category=category or None, page=page, page_size=page_size)
+    return make_succ_response({"list": tags, "total": total, "page": page, "pageSize": page_size})
 
 
-@app.route('/api/admin/tags/<int:tag_id>', methods=['GET'])
+@app.route("/api/admin/tags/<int:tag_id>", methods=["GET"])
 @require_admin
 def admin_get_tag(tag_id):
-    from wxcloudrun.model import Tag
-    tag = Tag.query.get(tag_id)
-    if not tag:
-        return make_err_response('标签不存在')
-    return make_succ_response(tag.to_dict())
+    tag = db.session.get(Tag, tag_id)
+    return make_succ_response(tag.to_dict()) if tag else make_err_response("标签不存在", 404)
 
 
-@app.route('/api/admin/tags', methods=['POST'])
-@require_admin
+def _apply_tag_payload(tag, data):
+    tag.name = clean_text(data.get("name", tag.name), "标签名称", required=True, max_length=50)
+    tag.category = clean_text(
+        data.get("category", tag.category), "标签分类", required=True, max_length=50
+    )
+    tag.sort_order = clean_int(data.get("sortOrder", tag.sort_order), "排序", default=0)
+    if "icon" in data:
+        tag.icon = clean_text(data["icon"], "图标地址", max_length=500) or None
+    if "bannerImage" in data:
+        tag.banner_image = clean_text(data["bannerImage"], "横幅地址", max_length=500) or None
+
+
+@app.route("/api/admin/tags", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_create_tag():
-    from wxcloudrun.model import Tag
-    data = request.get_json()
-    tag = Tag(name=data['name'], category=data.get('category', ''),
-              sort_order=data.get('sortOrder', 0))
+    tag = Tag(sort_order=0)
+    _apply_tag_payload(tag, _json_body())
     db.session.add(tag)
     db.session.commit()
-    return make_succ_response(tag.to_dict())
+    return make_succ_response(tag.to_dict(), 201)
 
 
-@app.route('/api/admin/tags/<int:tag_id>', methods=['PUT'])
-@require_admin
+@app.route("/api/admin/tags/<int:tag_id>", methods=["PUT"])
+@require_roles(*_ROLE_EDITOR)
 def admin_update_tag(tag_id):
-    from wxcloudrun.model import Tag
-    tag = Tag.query.get(tag_id)
+    tag = db.session.get(Tag, tag_id)
     if not tag:
-        return make_err_response('标签不存在')
-    data = request.get_json()
-    for field in ['name', 'category', 'icon', 'banner_image', 'sort_order']:
-        if field in data:
-            setattr(tag, field, data[field])
-    if 'sortOrder' in data:
-        tag.sort_order = data['sortOrder']
+        return make_err_response("标签不存在", 404)
+    _apply_tag_payload(tag, _json_body())
     db.session.commit()
     return make_succ_response(tag.to_dict())
 
 
-@app.route('/api/admin/tags/<int:tag_id>', methods=['DELETE'])
-@require_admin
+@app.route("/api/admin/tags/<int:tag_id>", methods=["DELETE"])
+@require_roles("admin")
 def admin_delete_tag(tag_id):
-    from wxcloudrun.model import Tag
-    tag = Tag.query.get(tag_id)
+    tag = db.session.get(Tag, tag_id)
     if not tag:
-        return make_err_response('标签不存在')
+        return make_err_response("标签不存在", 404)
+    if tag.products.count():
+        return make_err_response("标签仍被产品使用，不能删除", 409)
+    urls = [tag.icon, tag.banner_image]
     db.session.delete(tag)
     db.session.commit()
+    storage_delete(urls)
     return make_succ_empty_response()
 
 
-@app.route('/api/admin/tags/<int:tag_id>/image', methods=['POST'])
-@require_admin
+@app.route("/api/admin/tags/<int:tag_id>/image", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_upload_tag_image(tag_id):
-    from wxcloudrun.model import Tag
-    tag = Tag.query.get(tag_id)
+    tag = db.session.get(Tag, tag_id)
     if not tag:
-        return make_err_response('标签不存在')
-    image_type = request.form.get('type', 'icon')
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    if image_type == 'banner':
-        cloud_path = 'label_image/{}/banner.{}'.format(tag_id, ext)
-    else:
-        cloud_path = 'label_icon/{}/icon.{}'.format(tag_id, ext)
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    if image_type == 'banner':
-        tag.banner_image = storage_url
-    else:
-        tag.icon = storage_url
-    db.session.commit()
-    return make_succ_response({'url': storage_url})
+        return make_err_response("标签不存在", 404)
+    image_type = request.form.get("type", "icon")
+    if image_type not in {"icon", "banner"}:
+        raise ValidationError("图片类型只能是icon或banner")
+    result = _upload_image(request.files.get("file"), f"label_image/{tag_id}/{image_type}")
+    _replace_storage_url(tag, "banner_image" if image_type == "banner" else "icon", result)
+    return make_succ_response({"url": result["url"]})
 
 
-# --- 后管 合集 CRUD ---
-
-@app.route('/api/admin/collections', methods=['GET'])
+@app.route("/api/admin/collections", methods=["GET"])
 @require_admin
 def admin_get_collections():
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
-    cols, total = get_collections(carousel_only=False, page=page, page_size=page_size)
-    return make_succ_response({'list': cols, 'total': total, 'page': page, 'pageSize': page_size})
+    page, page_size = pagination_args(request.args)
+    collections, total = get_collections(
+        page=page, page_size=page_size, include_inactive_products=True
+    )
+    return make_succ_response(
+        {"list": collections, "total": total, "page": page, "pageSize": page_size}
+    )
 
 
-@app.route('/api/admin/collections/<int:col_id>', methods=['GET'])
+@app.route("/api/admin/collections/<int:collection_id>", methods=["GET"])
 @require_admin
-def admin_get_collection(col_id):
-    from wxcloudrun.model import Collection
-    col = Collection.query.get(col_id)
-    if not col:
-        return make_err_response('合集不存在')
-    return make_succ_response(col.to_dict())
+def admin_get_collection(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    return (
+        make_succ_response(collection.to_dict(include_inactive_products=True))
+        if collection
+        else make_err_response("合集不存在", 404)
+    )
 
 
-@app.route('/api/admin/collections', methods=['POST'])
-@require_admin
+def _apply_collection_payload(collection, data):
+    collection.name = clean_text(
+        data.get("name", collection.name), "合集名称", required=True, max_length=100
+    )
+    collection.description = clean_text(
+        data.get("description", collection.description), "合集描述", max_length=200_000
+    )
+    collection.is_carousel = _bool(data.get("isCarousel"), collection.is_carousel)
+    collection.carousel_sort = clean_int(
+        data.get("carouselSort", collection.carousel_sort), "轮播排序", default=0
+    )
+    collection.sort_order = clean_int(
+        data.get("sortOrder", collection.sort_order), "排序", default=0
+    )
+    if "coverImage" in data:
+        collection.cover_image = clean_text(data["coverImage"], "封面地址", max_length=500) or None
+
+
+@app.route("/api/admin/collections", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_create_collection():
-    from wxcloudrun.model import Collection
-    data = request.get_json()
-    col = Collection(name=data['name'], description=data.get('description', ''),
-                     is_carousel=data.get('isCarousel', False),
-                     carousel_sort=data.get('carouselSort', 0),
-                     sort_order=data.get('sortOrder', 0))
-    db.session.add(col)
+    collection = Collection(is_carousel=False, carousel_sort=0, sort_order=0)
+    _apply_collection_payload(collection, _json_body())
+    db.session.add(collection)
     db.session.commit()
-    return make_succ_response(col.to_dict())
+    return make_succ_response(collection.to_dict(include_inactive_products=True), 201)
 
 
-@app.route('/api/admin/collections/<int:col_id>', methods=['PUT'])
-@require_admin
-def admin_update_collection(col_id):
-    from wxcloudrun.model import Collection
-    col = Collection.query.get(col_id)
-    if not col:
-        return make_err_response('合集不存在')
-    data = request.get_json()
-    for field in ['name', 'description', 'cover_image', 'is_carousel', 'carousel_sort', 'sort_order']:
-        if field in data:
-            setattr(col, field, data[field])
-    if 'isCarousel' in data:
-        col.is_carousel = data['isCarousel']
-    if 'carouselSort' in data:
-        col.carousel_sort = data['carouselSort']
-    if 'sortOrder' in data:
-        col.sort_order = data['sortOrder']
+@app.route("/api/admin/collections/<int:collection_id>", methods=["PUT"])
+@require_roles(*_ROLE_EDITOR)
+def admin_update_collection(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    if not collection:
+        return make_err_response("合集不存在", 404)
+    _apply_collection_payload(collection, _json_body())
     db.session.commit()
-    return make_succ_response(col.to_dict())
+    return make_succ_response(collection.to_dict(include_inactive_products=True))
 
 
-@app.route('/api/admin/collections/<int:col_id>', methods=['DELETE'])
-@require_admin
-def admin_delete_collection(col_id):
-    from wxcloudrun.model import Collection
-    col = Collection.query.get(col_id)
-    if not col:
-        return make_err_response('合集不存在')
-    db.session.delete(col)
+@app.route("/api/admin/collections/<int:collection_id>", methods=["DELETE"])
+@require_roles("admin")
+def admin_delete_collection(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    if not collection:
+        return make_err_response("合集不存在", 404)
+    cover_url = collection.cover_image
+    db.session.delete(collection)
     db.session.commit()
+    storage_delete([cover_url])
     return make_succ_empty_response()
 
 
-@app.route('/api/admin/collections/<int:col_id>/products', methods=['GET'])
+@app.route("/api/admin/collections/<int:collection_id>/products", methods=["GET"])
 @require_admin
-def admin_get_collection_products(col_id):
-    """获取合集已关联的产品列表 + 全部可选产品"""
-    from wxcloudrun.model import Collection, collection_products
-    col = Collection.query.get(col_id)
-    if not col:
-        return make_err_response('合集不存在')
-    # 合集已关联产品（按 sort_order 排序）
-    linked = db.session.query(Product, collection_products.c.sort_order)\
-        .join(collection_products, Product.id == collection_products.c.product_id)\
-        .filter(collection_products.c.collection_id == col_id)\
-        .order_by(collection_products.c.sort_order)\
+def admin_get_collection_products(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    if not collection:
+        return make_err_response("合集不存在", 404)
+    linked = (
+        db.session.query(Product, collection_products.c.sort_order)
+        .join(collection_products, Product.id == collection_products.c.product_id)
+        .filter(collection_products.c.collection_id == collection_id)
+        .order_by(collection_products.c.sort_order)
         .all()
+    )
     linked_products = []
-    for p, so in linked:
-        d = p.to_dict()
-        d['_sortOrder'] = so
-        linked_products.append(d)
-    # 全部产品（供选择）
-    all_products, _ = get_products(page=1, page_size=9999, include_inactive=True)
-    return make_succ_response({
-        'collection': col.to_dict(),
-        'linkedProducts': linked_products,
-        'allProducts': all_products,
-    })
+    for product, sort_order in linked:
+        value = product.to_dict()
+        value["_sortOrder"] = sort_order
+        linked_products.append(value)
+    all_products, _ = get_products(page=1, page_size=5000, include_inactive=True)
+    return make_succ_response(
+        {
+            "collection": collection.to_dict(include_inactive_products=True),
+            "linkedProducts": linked_products,
+            "allProducts": all_products,
+        }
+    )
 
 
-@app.route('/api/admin/collections/<int:col_id>/products', methods=['PUT'])
-@require_admin
-def admin_update_collection_products(col_id):
-    from wxcloudrun.model import Collection, collection_products
-    col = Collection.query.get(col_id)
-    if not col:
-        return make_err_response('合集不存在')
-    data = request.get_json()
-    product_ids = data.get('product_ids', [])
-    # 清空旧关联
-    db.session.execute(collection_products.delete().where(collection_products.c.collection_id == col_id))
-    # 插入新关联
-    for i, pid in enumerate(product_ids):
-        db.session.execute(collection_products.insert().values(collection_id=col_id, product_id=pid, sort_order=i))
+@app.route("/api/admin/collections/<int:collection_id>/products", methods=["PUT"])
+@require_roles(*_ROLE_EDITOR)
+def admin_update_collection_products(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    if not collection:
+        return make_err_response("合集不存在", 404)
+    data = _json_body()
+    product_ids = _id_list(data.get("product_ids", data.get("productIds", [])), "产品ID")
+    existing = Product.query.filter(Product.id.in_(product_ids)).count() if product_ids else 0
+    if existing != len(product_ids):
+        raise ValidationError("产品ID中包含不存在的记录")
+    db.session.execute(
+        collection_products.delete().where(collection_products.c.collection_id == collection_id)
+    )
+    for sort_order, product_id in enumerate(product_ids):
+        db.session.execute(
+            collection_products.insert().values(
+                collection_id=collection_id,
+                product_id=product_id,
+                sort_order=sort_order,
+            )
+        )
     db.session.commit()
-    return make_succ_response(col.to_dict())
+    return make_succ_response(collection.to_dict(include_inactive_products=True))
 
 
-@app.route('/api/admin/collections/<int:col_id>/image', methods=['POST'])
-@require_admin
-def admin_upload_collection_image(col_id):
-    from wxcloudrun.model import Collection
-    col = Collection.query.get(col_id)
-    if not col:
-        return make_err_response('合集不存在')
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'jpg'
-    cloud_path = 'collection_image/{}/cover.{}'.format(col_id, ext)
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    col.cover_image = storage_url
-    db.session.commit()
-    return make_succ_response({'url': storage_url})
+@app.route("/api/admin/collections/<int:collection_id>/image", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
+def admin_upload_collection_image(collection_id):
+    collection = db.session.get(Collection, collection_id)
+    if not collection:
+        return make_err_response("合集不存在", 404)
+    result = _upload_image(request.files.get("file"), f"collection_image/{collection_id}")
+    _replace_storage_url(collection, "cover_image", result)
+    return make_succ_response({"url": result["url"]})
 
 
-# --- 后管 文章列表（含草稿） ---
-
-@app.route('/api/admin/articles', methods=['GET'])
+@app.route("/api/admin/articles", methods=["GET"])
 @require_admin
 def admin_get_articles():
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', 20, type=int)
-    status = request.args.get('status', 'all')
-    published_only = True if status == 'published' else (False if status == 'draft' else None)
+    page, page_size = pagination_args(request.args)
+    status = request.args.get("status", "all")
+    if status not in {"all", "published", "draft"}:
+        raise ValidationError("status只能是all、published或draft")
+    published_only = True if status == "published" else False if status == "draft" else None
     articles, total = get_articles(page=page, page_size=page_size, published_only=published_only)
-    return make_succ_response({'list': articles, 'total': total, 'page': page, 'pageSize': page_size})
+    return make_succ_response(
+        {"list": articles, "total": total, "page": page, "pageSize": page_size}
+    )
 
 
-@app.route('/api/admin/articles/<int:article_id>', methods=['GET'])
+@app.route("/api/admin/articles/<int:article_id>", methods=["GET"])
 @require_admin
 def admin_get_article(article_id):
     article = get_article_by_id(article_id)
+    return (
+        make_succ_response(article.to_dict()) if article else make_err_response("文章不存在", 404)
+    )
+
+
+def _apply_article_payload(article, data, *, creating=False):
+    article.title = clean_text(
+        data.get("title", article.title), "文章标题", required=True, max_length=200
+    )
+    article.author = clean_text(data.get("author", article.author), "作者", max_length=50)
+    if "content" in data or creating:
+        article.content = sanitize_rich_text(data.get("content", article.content))
+    article.sort_order = clean_int(data.get("sortOrder", article.sort_order), "排序", default=0)
+    if "coverImage" in data:
+        article.cover_image = clean_text(data["coverImage"], "封面地址", max_length=500) or None
+    if "isPublished" in data or creating:
+        published = _bool(data.get("isPublished"), False)
+        if published and not article.is_published:
+            article.published_at = datetime.now()
+        if not published:
+            article.published_at = None
+        article.is_published = published
+
+
+@app.route("/api/admin/articles", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
+def admin_create_article():
+    article = Article(is_published=False, sort_order=0)
+    _apply_article_payload(article, _json_body(), creating=True)
+    db.session.add(article)
+    db.session.commit()
+    return make_succ_response(article.to_dict(), 201)
+
+
+@app.route("/api/admin/articles/<int:article_id>", methods=["PUT"])
+@require_roles(*_ROLE_EDITOR)
+def admin_update_article(article_id):
+    article = get_article_by_id(article_id)
     if not article:
-        return make_err_response('文章不存在')
+        return make_err_response("文章不存在", 404)
+    _apply_article_payload(article, _json_body())
+    db.session.commit()
     return make_succ_response(article.to_dict())
 
 
-@app.route('/api/admin/articles/<int:article_id>/image', methods=['POST'])
-@require_admin
+@app.route("/api/admin/articles/<int:article_id>", methods=["DELETE"])
+@require_roles("admin")
+def admin_delete_article(article_id):
+    article = get_article_by_id(article_id)
+    if not article:
+        return make_err_response("文章不存在", 404)
+    cover_url = article.cover_image
+    db.session.delete(article)
+    db.session.commit()
+    storage_delete([cover_url])
+    return make_succ_empty_response()
+
+
+@app.route("/api/admin/articles/<int:article_id>/image", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_upload_article_image(article_id):
     article = get_article_by_id(article_id)
     if not article:
-        return make_err_response('文章不存在')
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'jpg'
-    cloud_path = 'article_image/{}/cover.{}'.format(article_id, ext)
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    article.cover_image = storage_url
-    db.session.commit()
-    return make_succ_response({'url': storage_url})
-
-
-# --- 后管 公司信息 ---
+        return make_err_response("文章不存在", 404)
+    result = _upload_image(request.files.get("file"), f"article_image/{article_id}")
+    _replace_storage_url(article, "cover_image", result)
+    return make_succ_response({"url": result["url"]})
 
 
 def _get_or_create_company_info():
-    """获取或创建 CompanyInfo 记录；新建时 flush 以获取自增 id"""
-    from wxcloudrun.model import CompanyInfo
     info = CompanyInfo.query.first()
     if not info:
         info = CompanyInfo()
@@ -681,103 +880,79 @@ def _get_or_create_company_info():
     return info
 
 
-@app.route('/api/admin/company', methods=['GET'])
+@app.route("/api/admin/company", methods=["GET"])
 @require_admin
 def admin_get_company():
-    from wxcloudrun.model import CompanyInfo
     info = CompanyInfo.query.first()
     return make_succ_response(info.to_dict() if info else {})
 
 
-@app.route('/api/admin/company', methods=['PUT'])
-@require_admin
+@app.route("/api/admin/company", methods=["PUT"])
+@require_roles(*_ROLE_EDITOR)
 def admin_update_company():
-    from wxcloudrun.model import CompanyInfo
-    data = request.get_json()
-    info = CompanyInfo.query.first()
-    if not info:
-        info = CompanyInfo()
-        db.session.add(info)
-    for field in ['name', 'intro', 'phone', 'wechat_id', 'email', 'address', 'business_hours', 'company_image']:
-        if field in data:
-            setattr(info, field, data[field])
-    if 'wechatId' in data:
-        info.wechat_id = data['wechatId']
-    if 'businessHours' in data:
-        info.business_hours = data['businessHours']
-    if 'companyImage' in data:
-        info.company_image = data['companyImage']
+    data = _json_body()
+    info = _get_or_create_company_info()
+    fields = {
+        "name": ("name", 200),
+        "intro": ("intro", 200_000),
+        "phone": ("phone", 20),
+        "wechatId": ("wechat_id", 50),
+        "email": ("email", 100),
+        "address": ("address", 500),
+        "businessHours": ("business_hours", 200),
+        "companyImage": ("company_image", 500),
+    }
+    for input_name, (attribute, max_length) in fields.items():
+        if input_name in data:
+            setattr(
+                info,
+                attribute,
+                clean_text(data[input_name], input_name, max_length=max_length) or None,
+            )
     db.session.commit()
     return make_succ_response(info.to_dict())
 
 
-@app.route('/api/admin/company/logo', methods=['POST'])
-@require_admin
+def _upload_company_image(attribute, name):
+    info = _get_or_create_company_info()
+    result = _upload_image(request.files.get("file"), f"company/{info.id}/{name}")
+    _replace_storage_url(info, attribute, result)
+    return make_succ_response({"url": result["url"], "id": info.id})
+
+
+@app.route("/api/admin/company/logo", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_upload_company_logo():
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    info = _get_or_create_company_info()
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    cloud_path = 'company/{}/logo.{}'.format(info.id, ext)
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    info.logo = storage_url
-    db.session.commit()
-    return make_succ_response({'url': storage_url, 'id': info.id})
+    return _upload_company_image("logo", "logo")
 
 
-@app.route('/api/admin/company/qr', methods=['POST'])
-@require_admin
+@app.route("/api/admin/company/qr", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_upload_company_qr():
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    info = _get_or_create_company_info()
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    cloud_path = 'company/{}/wechat_qr.{}'.format(info.id, ext)
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    info.wechat_qr = storage_url
-    db.session.commit()
-    return make_succ_response({'url': storage_url, 'id': info.id})
+    return _upload_company_image("wechat_qr", "wechat_qr")
 
 
-@app.route('/api/admin/company/image', methods=['POST'])
-@require_admin
+@app.route("/api/admin/company/image", methods=["POST"])
+@require_roles(*_ROLE_EDITOR)
 def admin_upload_company_image():
-    file = request.files.get('file')
-    if not file:
-        return make_err_response('请选择文件')
-    info = _get_or_create_company_info()
-    ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'png'
-    cloud_path = 'company/{}/image.{}'.format(info.id, ext)
-    result = storage_upload(file.read(), cloud_path)
-    if not result['success']:
-        return make_err_response(result.get('error', '上传失败'))
-    storage_url = result['url']
-    info.company_image = storage_url
-    db.session.commit()
-    return make_succ_response({'url': storage_url, 'id': info.id})
+    return _upload_company_image("company_image", "image")
 
 
-# ==================== 临时：同步 Tag.icon → Category.icon ====================
-
-@app.route('/api/admin/sync-category-icons', methods=['POST'])
-@require_admin
+@app.route("/api/admin/sync-category-icons", methods=["POST"])
+@require_roles("admin")
 def admin_sync_category_icons():
-    """一次性同步：将 category='产品系列' 的 Tag.icon 复制到同名 Category.icon"""
-    from wxcloudrun.model import Tag, Category
-    tags = Tag.query.filter(Tag.category == '产品系列', Tag.icon.isnot(None), Tag.icon != '').all()
+    tags = Tag.query.filter(Tag.category == "产品系列", Tag.icon.isnot(None), Tag.icon != "").all()
     updated = []
     for tag in tags:
-        cat = Category.query.filter(Category.name == tag.name).first()
-        if cat and not cat.icon:
-            cat.icon = tag.icon
-            updated.append({'category_id': cat.id, 'name': cat.name, 'icon': cat.icon})
+        category = Category.query.filter_by(name=tag.name).first()
+        if category and not category.icon:
+            category.icon = tag.icon
+            updated.append(
+                {
+                    "categoryId": category.id,
+                    "name": category.name,
+                    "icon": category.icon,
+                }
+            )
     db.session.commit()
-    return make_succ_response({'synced': len(updated), 'details': updated})
+    return make_succ_response({"synced": len(updated), "details": updated})

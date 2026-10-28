@@ -1,124 +1,97 @@
-# wxcloudrun-flask
-[![GitHub license](https://img.shields.io/github/license/WeixinCloud/wxcloudrun-express)](https://github.com/WeixinCloud/wxcloudrun-express)
-![GitHub package.json dependency version (prod)](https://img.shields.io/badge/python-3.7.3-green)
+# ScentRise WeChat backend
 
-微信云托管 python Flask 框架模版，实现简单的计数器读写接口，使用云托管 MySQL 读写、记录计数值。
+Flask backend for the ScentRise mini-program and administration console. The
+admin console is served at `/admin/`; health probes are `/healthz` and
+`/readyz`.
 
-![](https://qcloudimg.tencent-cloud.cn/raw/be22992d297d1b9a1a5365e606276781.png)
+## Required configuration
 
+No credentials or cloud identifiers have source-code defaults. Configure these
+as secret/environment variables in WeChat CloudBase:
 
-## 快速开始
-前往 [微信云托管快速开始页面](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html)，选择相应语言的模板，根据引导完成部署。
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `JWT_SECRET` | yes | Long random admin-session signing secret |
+| `DATABASE_URL` | one database option | Full SQLAlchemy URL |
+| `MYSQL_USERNAME` | if no `DATABASE_URL` | MySQL username |
+| `MYSQL_PASSWORD` | if no `DATABASE_URL` | MySQL password |
+| `MYSQL_ADDRESS` | if no `DATABASE_URL` | `host:port` |
+| `MYSQL_DBNAME` | no | Defaults to `scentrise` |
+| `TCB_ENV_ID` | for uploads | CloudBase environment ID |
+| `CDN_BASE` | for uploads | HTTPS object-storage CDN base URL |
+| `WECHAT_ACCESS_TOKEN` | one upload auth option | Existing WeChat access token |
+| `WECHAT_APPID` / `WECHAT_APPSECRET` | one upload auth option | Token retrieval credentials |
+| `REQUESTS_CA_BUNDLE` | no | Custom CA bundle path; TLS verification stays enabled |
+| `PORT` | no | Container port, defaults to `8080` |
 
-## 本地调试
-下载代码在本地调试，请参考[微信云托管本地调试指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/)
+Optional safety limits: `JWT_EXP_HOURS` (8), `MAX_CONTENT_LENGTH` (12 MiB),
+`MAX_IMAGE_BYTES` (10 MiB), and `MAX_IMPORT_ROWS` (5000).
 
-## 实时开发
-代码变动时，不需要重新构建和启动容器，即可查看变动后的效果。请参考[微信云托管实时开发指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/dev.html)
+Do not enable `AUTO_CREATE_DATABASE` or `AUTO_CREATE_TABLES` in production.
 
-## Dockerfile最佳实践
-请参考[如何提高项目构建效率](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
+## Local development and tests
 
-## 目录结构说明
-
-~~~
-.
-├── Dockerfile dockerfile       dockerfile
-├── README.md README.md         README.md文件
-├── container.config.json       模板部署「服务设置」初始化配置（二开请忽略）
-├── requirements.txt            依赖包文件
-├── config.py                   项目的总配置文件  里面包含数据库 web应用 日志等各种配置
-├── run.py                      flask项目管理文件 与项目进行交互的命令行工具集的入口
-└── wxcloudrun                  app目录
-    ├── __init__.py             python项目必带  模块化思想
-    ├── dao.py                  数据库访问模块
-    ├── model.py                数据库对应的模型
-    ├── response.py             响应结构构造
-    ├── templates               模版目录,包含主页index.html文件
-    └── views.py                执行响应的代码所在模块  代码逻辑处理主要地点  项目大部分代码在此编写
-~~~
-
-
-
-## 服务 API 文档
-
-### `GET /api/count`
-
-获取当前计数
-
-#### 请求参数
-
-无
-
-#### 响应结果
-
-- `code`：错误码
-- `data`：当前计数值
-
-##### 响应结果示例
-
-```json
-{
-  "code": 0,
-  "data": 42
-}
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-dev.txt
+export TESTING=1
+export DATABASE_URL=sqlite:///local.db
+export JWT_SECRET="replace-with-a-long-random-test-secret"
+export AUTO_CREATE_TABLES=1
+pytest -q
+flask --app wxcloudrun run --port 8080
 ```
 
-#### 调用示例
+An administrator is never created automatically. For an intentional first-time
+setup, run the migration and then use the guarded utility:
 
-```
-curl https://<云托管服务域名>/api/count
-```
-
-
-
-### `POST /api/count`
-
-更新计数，自增或者清零
-
-#### 请求参数
-
-- `action`：`string` 类型，枚举值
-  - 等于 `"inc"` 时，表示计数加一
-  - 等于 `"clear"` 时，表示计数重置（清零）
-
-##### 请求参数示例
-
-```
-{
-  "action": "inc"
-}
+```bash
+flask --app wxcloudrun db upgrade
+ALLOW_ADMIN_SEED=1 INITIAL_ADMIN_USERNAME=admin \
+INITIAL_ADMIN_PASSWORD='a-unique-strong-password' python seed_admin.py
 ```
 
-#### 响应结果
+The password must contain 12–72 characters and is never printed. Rotate the
+currently deployed default password before exposing a new release.
 
-- `code`：错误码
-- `data`：当前计数值
+## Product import contract
 
-##### 响应结果示例
+The administration console accepts these equivalent headers:
 
-```json
-{
-  "code": 0,
-  "data": 42
-}
-```
+- name: `产品名称`, `名称`, `productName`
+- model: `产品型号`, `型号`, `productModel`
+- series: `产品系列`, `productSeries`
+- description: `产品简介`, `产品描述`, `productDesc`
+- optional English name: `英文名称`, `productEnglishName`
 
-#### 调用示例
+The first worksheet row is always treated as the header and data starts on row
+two. Import is a two-step operation. `/api/admin/import/preflight` validates the
+file, reports create/update/no-change counts, and returns a plan hash. Invalid
+rows are reported and skipped while all other eligible rows still commit in one
+transaction. For duplicate models inside the workbook, the administrator can
+either use the last row or skip every row for that duplicate model. For models
+already in the database, the administrator can update them or skip them; either
+choice still imports the remaining eligible rows. Empty English-name/description
+cells do not overwrite existing values by default, and blank tag cells preserve
+existing usage tags. The database primary key is the numeric `id`; product model
+is the globally unique business key used to match imports.
 
-```
-curl -X POST -H 'content-type: application/json' -d '{"action": "inc"}' https://<云托管服务域名>/api/count
-```
+## Production rollout
 
-## 使用注意
-如果不是通过微信云托管控制台部署模板代码，而是自行复制/下载模板代码后，手动新建一个服务并部署，需要在「服务设置」中补全以下环境变量，才可正常使用，否则会引发无法连接数据库，进而导致部署失败。
-- MYSQL_ADDRESS
-- MYSQL_PASSWORD
-- MYSQL_USERNAME
-以上三个变量的值请按实际情况填写。如果使用云托管内MySQL，可以在控制台MySQL页面获取相关信息。
+Release baseline, commit/image/configuration/migration evidence, CI gates and rollback:
+[release baseline and rollback](docs/deployment/release-baseline.md).
+The baseline candidate is pending review; this change does not deploy or switch production.
 
+1. Back up MySQL and inspect duplicate category names.
+2. Configure all required secret variables and set the service container port
+   to `8080`.
+3. Run `flask --app wxcloudrun db upgrade` against the target database.
+4. Build and deploy the Docker image. Gunicorn runs as an unprivileged user.
+5. Verify `/healthz`, `/readyz`, public down/draft visibility, admin login,
+   import preflight, and a small controlled import before the full workbook.
+6. Rotate the admin password and `JWT_SECRET` if either legacy default was ever
+   used.
 
-
-## License
-
-[MIT](./LICENSE)
+`schema.sql` is only a non-destructive new-install bootstrap. Existing databases
+must use migrations; it never drops tables or inserts users/data.
